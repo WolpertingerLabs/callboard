@@ -8,17 +8,24 @@
  * unicode, `mcp__x__y`, digits, over-length names. The shared factory must give
  * the identical answer for every one, per provider. The Cline and ACP columns
  * were pruned when those harnesses were retired; pi still pins the same corpus.
+ *
+ * Callboard's own tool names (`render_file`, `vault_get`, …) are left out: pi
+ * decides them from the shared gate table (callboardToolPolicy.ts) before
+ * this categorizer is consulted, so the name map no longer pins them.
  */
 import { describe, expect, it } from "vitest";
 import { readFileSync } from "node:fs";
 import { categorizePiToolName } from "../adapters/pi/permissionAdapter.js";
+import { callboardToolGateByBareName } from "./callboardToolPolicy.js";
 
 interface ParityCase {
   name: string;
   pi: string | null;
 }
 
-const cases: ParityCase[] = JSON.parse(readFileSync(new URL("./__fixtures__/nameCategorizer.parity.json", import.meta.url), "utf8"));
+const cases: ParityCase[] = (JSON.parse(readFileSync(new URL("./__fixtures__/nameCategorizer.parity.json", import.meta.url), "utf8")) as ParityCase[]).filter(
+  (c) => callboardToolGateByBareName(c.name) === undefined,
+);
 
 describe("makeNameCategorizer parity with the pre-consolidation categorizers", () => {
   it("covers a broad corpus", () => {

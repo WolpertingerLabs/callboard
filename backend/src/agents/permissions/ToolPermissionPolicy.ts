@@ -9,6 +9,7 @@
  * @see plans/agent-abstraction-layer.md (Decision 2)
  */
 import type { DefaultPermissions } from "shared/types/index.js";
+import { decideGate, type ToolGate } from "./callboardToolPolicy.js";
 
 export type PermissionCategory = keyof DefaultPermissions;
 export type PermissionDecision = "allow" | "deny" | "ask";
@@ -49,15 +50,23 @@ export function decidePermission(category: PermissionCategory | null, defaultPer
   return "ask";
 }
 
+/** Callboard tool name (+ input) → its gate, or `undefined` when the name is not a Callboard tool. */
+export type CallboardGateResolver = (toolName: string, input?: Record<string, unknown>) => ToolGate | undefined;
+
 /**
  * Bound policy that holds a live `getDefaultPermissions` accessor (so mid-session
  * policy changes in storage are picked up immediately) and delegates to a
  * provider-supplied tool-name → category categorizer.
+ *
+ * Callboard's own tools are decided from their gate in
+ * `callboardToolPolicy.ts` instead, through `resolveGate` — input-aware, and
+ * possibly needing several axes. Absent, every name goes to the categorizer.
  */
 export class ToolPermissionPolicy {
   constructor(
     private readonly categorize: (toolName: string) => PermissionCategory | null,
     private readonly getDefaultPermissions: () => DefaultPermissions | null,
+    private readonly resolveGate?: CallboardGateResolver,
   ) {}
 
   /** Get the category the adapter would assign to this tool name. */
@@ -65,8 +74,22 @@ export class ToolPermissionPolicy {
     return this.categorize(toolName);
   }
 
-  /** Final decision for a given tool name. */
-  decide(toolName: string): { decision: PermissionDecision; category: PermissionCategory | null } {
+  /**
+   * Final decision for a given tool name (and its input, which a Callboard
+   * tool's gate may depend on).
+   *
+   * `callboardTool` is true when the Callboard table decided; `pending` then
+   * lists every axis that asked — what an approver must itself hold.
+   */
+  decide(
+    toolName: string,
+    input?: Record<string, unknown>,
+  ): { decision: PermissionDecision; category: PermissionCategory | null; callboardTool?: true; pending?: PermissionCategory[] } {
+    const gate = this.resolveGate?.(toolName, input);
+    if (gate !== undefined) {
+      const decided = decideGate(gate, this.getDefaultPermissions());
+      return { decision: decided.decision, category: decided.category, callboardTool: true, pending: decided.pending };
+    }
     const category = this.categorize(toolName);
     const decision = decidePermission(category, this.getDefaultPermissions());
     return { decision, category };

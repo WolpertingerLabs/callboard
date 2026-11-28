@@ -25,6 +25,9 @@ import {
   type PiPermissionContext,
 } from "./permissionAdapter.js";
 import { buildPiServicesOptions } from "./optionsAdapter.js";
+import { callboardToolGateByBareName } from "../../permissions/callboardToolPolicy.js";
+import { getCallboardGateResolver, getToolCategorizer } from "../../permissions/categorizers.js";
+import { ToolPermissionPolicy } from "../../permissions/ToolPermissionPolicy.js";
 import type { DefaultPermissions } from "shared/types/index.js";
 
 const ALL_ALLOW: DefaultPermissions = {
@@ -166,22 +169,14 @@ describe("categorizePiToolName", () => {
     expect(PI_BUILTIN_TOOL_NAMES).toHaveLength(8);
   });
 
-  it("special-cases render_file, as the Claude map (and the retired OR/Cline maps) do", () => {
-    expect(categorizePiToolName("render_file")).toBe("fileRead");
-  });
-
-  it.each([
-    ["vault_list", "fileRead"],
-    ["vault_list_requests", "fileRead"],
-    ["vault_create", "fileWrite"],
-    ["vault_update", "fileWrite"],
-    ["vault_delete", "fileWrite"],
-    ["vault_request_access", "fileWrite"],
-    ["vault_cancel_request", "fileWrite"],
-    ["vault_get", "codeExecution"],
-  ] as const)("pins the drawlatch vault tool %s to %s", (name, expected) => {
-    expect(categorizePiToolName(name)).toBe(expected);
-  });
+  it.each(["render_file", "vault_get", "save_storage_item", "set_chat_title"])(
+    "leaves callboard's own %s to the shared gate table, not the name map",
+    (name) => {
+      // Owned by permissions/callboardToolPolicy.ts; both passes consult it first
+      // (see "callboard's own tools" below), so the name map never sees them.
+      expect(callboardToolGateByBareName(name)).toBeDefined();
+    },
+  );
 
   it.each([
     ["spawn_job", "codeExecution"],
@@ -189,16 +184,15 @@ describe("categorizePiToolName", () => {
     ["update_card", "fileWrite"],
     ["fetch_page", "webAccess"],
     ["list_cards", "fileRead"],
-  ] as const)("falls back to the token table for callboard's own %s", (name, expected) => {
+  ] as const)("falls back to the token table for a name no table knows: %s", (name, expected) => {
     expect(categorizePiToolName(name)).toBe(expected);
   });
 
   it("sends a name with no recognizable token to codeExecution", () => {
     // `set_chat_title` carries no token from any family — "set" is deliberately
-    // not a fileWrite word in any of the four adapter tables. So it lands on the
-    // strictest axis rather than being guessed at. Matching the retired Cline and OR
-    // tables here is worth more than a marginally kinder default: widening the
-    // token list is a cross-adapter change, not a side effect of adding pi.
+    // not a fileWrite word in any of the four adapter tables. So the name map
+    // alone lands it on the strictest axis rather than guessing. (In a real
+    // call it never gets here: it is ungated in the callboard table.)
     expect(categorizePiToolName("set_chat_title")).toBe(MOST_RESTRICTIVE_CATEGORY);
   });
 
@@ -292,6 +286,60 @@ describe("decidePiToolCall is fail-closed", () => {
     expect(await decidePiToolCall(context, toolCall("bash"))).toBeUndefined();
     permissions = ALL_DENY;
     expect((await decidePiToolCall(context, toolCall("bash")))?.block).toBe(true);
+  });
+});
+
+// ── callboard's own tools: the shared gate table, in both passes ──────
+
+describe("callboard's own tools", () => {
+  const DENY_READ: DefaultPermissions = { ...ALL_ALLOW, fileRead: "deny" };
+
+  it.each(["set_chat_title", "wait", "notify_user", "complete_job_step"])("runs ungated %s under an all-ask policy without asking", async (name) => {
+    const canUseTool = vi.fn();
+    expect(await decidePiToolCall(ctx({ getPermissions: () => ALL_ASK, canUseTool }), toolCall(name))).toBeUndefined();
+    expect(canUseTool).not.toHaveBeenCalled();
+  });
+
+  it("blocks save_storage_item with source_path when fileRead is denied, without asking", async () => {
+    const canUseTool = vi.fn();
+    const result = await decidePiToolCall(
+      ctx({ getPermissions: () => DENY_READ, canUseTool }),
+      toolCall("save_storage_item", { key: "k", name: "n", source_path: "/etc/passwd" }),
+    );
+    expect(result?.block).toBe(true);
+    expect(result?.reason).toMatch(/fileRead/);
+    expect(canUseTool).not.toHaveBeenCalled();
+  });
+
+  it("lets save_storage_item with inline content through when only fileRead is denied", async () => {
+    const result = await decidePiToolCall(ctx({ getPermissions: () => DENY_READ }), toolCall("save_storage_item", { key: "k", name: "n", content: "x" }));
+    expect(result).toBeUndefined();
+  });
+
+  it("gates vault_get at codeExecution", async () => {
+    const result = await decidePiToolCall(ctx({ getPermissions: () => ({ ...ALL_ALLOW, codeExecution: "deny" }) }), toolCall("vault_get", { name: "x" }));
+    expect(result?.block).toBe(true);
+  });
+
+  it("two-pass rule: pass 2 (ToolPermissionPolicy over the same name and input) agrees with pass 1", async () => {
+    const cases: [string, Record<string, unknown>, DefaultPermissions][] = [
+      ["save_storage_item", { source_path: "/x" }, DENY_READ],
+      ["save_storage_item", { content: "x" }, DENY_READ],
+      ["render_file", { url: "https://example.com" }, { ...ALL_ALLOW, webAccess: "deny" }],
+      ["render_file", { file_path: "/x" }, { ...ALL_ALLOW, webAccess: "deny" }],
+      ["vault_get", {}, ALL_ASK],
+      ["wait", {}, ALL_ASK],
+      ["bash", {}, ALL_ASK],
+    ];
+    for (const [name, input, perms] of cases) {
+      const policy = new ToolPermissionPolicy(getToolCategorizer("pi"), () => perms, getCallboardGateResolver("pi"));
+      const pass2 = policy.decide(name, input).decision;
+      const canUseTool = vi.fn().mockResolvedValue({ behavior: "allow" });
+      const pass1 = await decidePiToolCall(ctx({ getPermissions: () => perms, canUseTool }), toolCall(name, input));
+      const pass1Decision = canUseTool.mock.calls.length > 0 ? "ask" : pass1?.block ? "deny" : "allow";
+      expect(pass1Decision, `${name} ${JSON.stringify(input)}`).toBe(pass2);
+      if (pass1Decision === "ask") expect(canUseTool).toHaveBeenCalledWith(name, input, expect.anything());
+    }
   });
 });
 

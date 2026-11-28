@@ -136,7 +136,7 @@ export function listAnswerableRequests(callerChatId: string, callerPermissions: 
       // Another agent reads this: secret vault values are redacted.
       input: redactToolInputForReview(entry.toolName, entry.input),
       category: entry.category ?? null,
-      canApprove: parentApprovalRefusal(entry.category, callerPermissions) === null,
+      canApprove: parentApprovalRefusal(entry.category, callerPermissions, entry.pendingCategories) === null,
       ...(entry.reviewerNotes && { reviewerNotes: entry.reviewerNotes }),
     });
   }
@@ -174,9 +174,18 @@ export function respondAsParent(args: {
   // making the parent list again. Every check below runs on the resolved key.
   const chatId = pendingRequests.has(args.chatId) ? args.chatId : (findKeyByRequestId(requestId) ?? args.chatId);
   const entry = pendingRequests.get(chatId);
-  if (!entry) return { ok: false, error: "not_found", message: `Chat "${chatId}" has no open prompt. It may have been answered already — call list_pending_requests again.` };
+  if (!entry)
+    return {
+      ok: false,
+      error: "not_found",
+      message: `Chat "${chatId}" has no open prompt. It may have been answered already — call list_pending_requests again.`,
+    };
   if (entry.requestId !== requestId) {
-    return { ok: false, error: "stale_request", message: "That requestId is not the prompt currently open in that chat (it was answered or replaced). Call list_pending_requests again." };
+    return {
+      ok: false,
+      error: "stale_request",
+      message: "That requestId is not the prompt currently open in that chat (it was answered or replaced). Call list_pending_requests again.",
+    };
   }
   if (entry.humanOnly) {
     return {
@@ -188,9 +197,18 @@ export function respondAsParent(args: {
           : "This prompt may be answered only by the signed-in user.",
     };
   }
-  if (entry.eventType !== "permission_request") return { ok: false, error: "not_a_permission", message: "Only tool-permission prompts can be answered by a parent chat; questions and plan reviews are for the user." };
+  if (entry.eventType !== "permission_request")
+    return {
+      ok: false,
+      error: "not_a_permission",
+      message: "Only tool-permission prompts can be answered by a parent chat; questions and plan reviews are for the user.",
+    };
   if (!entry.offeredToParent || !childStillOffers(metadataIndex()(chatId))) {
-    return { ok: false, error: "parent_answers_off", message: `Chat "${chatId}" does not have "parent can answer" turned on, so its prompts are for the user only.` };
+    return {
+      ok: false,
+      error: "parent_answers_off",
+      message: `Chat "${chatId}" does not have "parent can answer" turned on, so its prompts are for the user only.`,
+    };
   }
   if (entry.offeredToParent !== callerChatId) {
     return {
@@ -200,7 +218,7 @@ export function respondAsParent(args: {
     };
   }
   if (allow) {
-    const refusal = parentApprovalRefusal(entry.category, args.callerPermissions);
+    const refusal = parentApprovalRefusal(entry.category, args.callerPermissions, entry.pendingCategories);
     if (refusal) return { ok: false, error: "permission_ceiling", message: refusal };
   }
 
@@ -252,10 +270,18 @@ function parentPermissions(parentChatId: string): DefaultPermissions | null {
  * a wait was ended (false = not approvable, or the parent was not waiting; the
  * prompt stays with the human either way).
  */
-export function notifyParentOfChildPrompt(parentChatId: string, childChatId: string, toolName: string, category: string | null): boolean {
-  const refusal = parentApprovalRefusal(category, parentPermissions(parentChatId));
+export function notifyParentOfChildPrompt(
+  parentChatId: string,
+  childChatId: string,
+  toolName: string,
+  category: string | null,
+  pendingCategories?: readonly string[],
+): boolean {
+  const refusal = parentApprovalRefusal(category, parentPermissions(parentChatId), pendingCategories);
   if (refusal) {
-    log.info(`[PERM-DIAG] ${toolName} prompt of ${childChatId} offered to parent ${parentChatId}, which may only deny it (${category ?? "no category"}) — not waking it`);
+    log.info(
+      `[PERM-DIAG] ${toolName} prompt of ${childChatId} offered to parent ${parentChatId}, which may only deny it (${category ?? "no category"}) — not waking it`,
+    );
     return false;
   }
   let released = false;
@@ -264,7 +290,9 @@ export function notifyParentOfChildPrompt(parentChatId: string, childChatId: str
     const outcome = releaseActivity(parentChatId, activity.id, `${CHILD_PROMPT_RELEASE_PREFIX}${childChatId}:${toolName}`);
     if (outcome.ok) released = true;
   }
-  log.info(`[PERM-DIAG] offered ${toolName} prompt of ${childChatId} to parent ${parentChatId} (wait ${released ? "ended early" : "not active — prompt stays with the user"})`);
+  log.info(
+    `[PERM-DIAG] offered ${toolName} prompt of ${childChatId} to parent ${parentChatId} (wait ${released ? "ended early" : "not active — prompt stays with the user"})`,
+  );
   return released;
 }
 

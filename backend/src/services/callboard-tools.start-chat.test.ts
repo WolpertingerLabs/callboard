@@ -328,8 +328,8 @@ describe("start_chat_session independent spawns", () => {
 });
 
 /**
- * The permission ceiling (permission-ceiling.ts). These tools are pre-approved
- * on Claude Code and in-process everywhere else, so the child's
+ * The permission ceiling (permission-ceiling.ts). Without branch arguments
+ * these tools are ungated by the chat's own policy, so the child's
  * `defaultPermissions` is the only thing standing between an "ask" chat and an
  * allow-all child with a shell.
  */

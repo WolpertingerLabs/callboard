@@ -6,8 +6,7 @@
  *
  * Driven through the real buildCanUseTool chain with the reviewer and the
  * audit emitter injected, the way pi reaches it (bare tool names) and the way
- * Claude Code would (`mcp__mcp-proxy__` names, only via a hook "ask", since
- * the server is otherwise pre-approved).
+ * Claude Code does (`mcp__mcp-proxy__` names).
  */
 import { EventEmitter } from "events";
 import { describe, expect, it, vi } from "vitest";
