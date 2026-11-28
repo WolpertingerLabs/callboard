@@ -177,6 +177,10 @@ describe("scanRepoExecutableConfig", () => {
       statusLine: true,
       helpers: ["apiKeyHelper", "awsAuthRefresh"],
       mcpJsonServers: ["above", "here"],
+      mcpJsonSources: [
+        { path: join(cwd, ".mcp.json"), servers: ["here"], inParent: false },
+        { path: join(parent, ".mcp.json"), servers: ["above"], inParent: true },
+      ],
     });
   });
 
@@ -186,7 +190,7 @@ describe("scanRepoExecutableConfig", () => {
     writeFileSync(join(cwd, ".claude", "settings.json"), "{oops");
     writeFileSync(join(cwd, ".claude", "settings.local.json"), JSON.stringify([1, 2]));
     writeFileSync(join(cwd, ".mcp.json"), JSON.stringify({ mcpServers: ["x"] }));
-    expect(scanRepoExecutableConfig(cwd)).toEqual({ hookEvents: [], statusLine: false, helpers: [], mcpJsonServers: [] });
+    expect(scanRepoExecutableConfig(cwd)).toEqual({ hookEvents: [], statusLine: false, helpers: [], mcpJsonServers: [], mcpJsonSources: [] });
     expect(scanRepoExecutableConfig(join(root, "scan", "missing")).hookEvents).toEqual([]);
   });
 });
@@ -220,5 +224,19 @@ describe("repoLockdownSettings", () => {
     writeFileSync(join(cwd, ".mcp.json"), JSON.stringify({ mcpServers: { evil: {}, other: {} } }));
     expect(repoLockdownSettings(cwd, { HOME: "/nowhere" }).disabledMcpjsonServers).toEqual(["evil", "other"]);
     expect("disabledMcpjsonServers" in repoLockdownSettings(dir("lock", "nomcp"), { HOME: "/nowhere" })).toBe(false);
+  });
+});
+
+describe("scanUserHookConfig", () => {
+  it("reports the user tier's hooks and status line, from CLAUDE_CONFIG_DIR or HOME/.claude", () => {
+    const cfg = dir("userhooks", ".claude");
+    writeFileSync(
+      join(cfg, "settings.json"),
+      JSON.stringify({ hooks: { Stop: [{ hooks: [] }], PreToolUse: [{ hooks: [] }], Empty: [] }, statusLine: { type: "command", command: "x" } }),
+    );
+    const want = { hookEvents: ["PreToolUse", "Stop"], statusLine: true };
+    expect(trust.scanUserHookConfig({ HOME: join(root, "userhooks") })).toEqual(want);
+    expect(trust.scanUserHookConfig({ HOME: "/nowhere", CLAUDE_CONFIG_DIR: cfg })).toEqual(want);
+    expect(trust.scanUserHookConfig({ HOME: join(root, "no-such-home") })).toEqual({ hookEvents: [], statusLine: false });
   });
 });

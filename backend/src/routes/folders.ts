@@ -1,13 +1,14 @@
 import { Router, type Request, type Response } from "express";
 import { folderService } from "../services/folder-service.js";
 import { requireSessionAuth } from "../auth.js";
-import { getAgentSettings } from "../services/agent-settings.js";
+import { getAgentSettings, getApiEnvOverrides } from "../services/agent-settings.js";
 import {
   decideRepoConfig,
   isFolderTrusted,
   normalizeClaudeProjectHooksMode,
   readTrustedFolders,
   scanRepoExecutableConfig,
+  scanUserHookConfig,
   trustFolder,
   untrustFolder,
 } from "../services/repo-config-trust.js";
@@ -130,7 +131,8 @@ foldersRouter.get("/repo-config", (req: Request, res: Response) => {
   /* #swagger.parameters['codeExecution'] = { in: 'query', type: 'string', description: 'allow | ask | deny; include a decision for that level' } */
   const folder = folderParam(req.query.folder);
   if (!folder) return res.status(400).json({ error: "folder query parameter (an absolute path) is required" });
-  const mode = normalizeClaudeProjectHooksMode(getAgentSettings().claudeProjectHooks);
+  const settings = getAgentSettings();
+  const mode = normalizeClaudeProjectHooksMode(settings.claudeProjectHooks);
   const trust = isFolderTrusted(folder);
   const ce = req.query.codeExecution;
   const codeExecution = ce === "allow" || ce === "ask" || ce === "deny" ? ce : undefined;
@@ -140,6 +142,9 @@ foldersRouter.get("/repo-config", (req: Request, res: Response) => {
     ...(trust.root && { trustRoot: trust.root }),
     mode,
     defines: scanRepoExecutableConfig(folder),
+    // The operator's own hooks, off too in a locked-down session. Same env the
+    // session's CLI gets (claude.ts), so the same user tier.
+    userDefines: scanUserHookConfig({ ...process.env, ...getApiEnvOverrides(settings) }),
     ...(codeExecution && { decision: decideRepoConfig({ cwd: folder, codeExecution, mode }) }),
   });
 });

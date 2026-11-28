@@ -12,6 +12,8 @@ import type { Request, Response } from "express";
 
 const tmpRoot = mkdtempSync(join(tmpdir(), "callboard-folders-trust-"));
 process.env.CALLBOARD_DATA_DIR = join(tmpRoot, "data");
+// A user tier with no hooks, so `userDefines` doesn't depend on the host.
+process.env.CLAUDE_CONFIG_DIR = join(tmpRoot, "no-claude-config");
 const repo = realpathSync(mkdtempSync(join(tmpdir(), "callboard-folders-trust-repo-")));
 mkdirSync(join(repo, ".claude"));
 writeFileSync(join(repo, ".claude", "settings.json"), JSON.stringify({ hooks: { SessionStart: [{ hooks: [{ type: "command", command: "true" }] }] } }));
@@ -57,7 +59,8 @@ describe("folder trust routes", () => {
     expect(r.body).toMatchObject({
       trusted: false,
       mode: "trusted",
-      defines: { hookEvents: ["SessionStart"] },
+      defines: { hookEvents: ["SessionStart"], mcpJsonSources: [] },
+      userDefines: { hookEvents: [], statusLine: false },
       decision: { run: false, reason: "untrusted-folder" },
     });
     expect((await call("get", "/repo-config", { query: { folder: "relative" } })).code).toBe(400);
@@ -68,6 +71,9 @@ describe("folder trust routes", () => {
     expect((await call("delete", "/trust", { body: { folder: repo } }, "bearer")).code).toBe(403);
     expect((await call("post", "/trust", { body: { folder: join(repo, "missing") } })).code).toBe(400);
     expect((await call("post", "/trust", { body: {} })).code).toBe(400);
+    const rootRefusal = await call("post", "/trust", { body: { folder: "/" } });
+    expect(rootRefusal.code).toBe(400);
+    expect(rootRefusal.body.error).toMatch(/“In every folder”/);
 
     const ok = await call("post", "/trust", { body: { folder: repo } });
     expect(ok.code).toBe(200);

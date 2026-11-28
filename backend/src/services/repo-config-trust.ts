@@ -124,7 +124,7 @@ export function trustFolder(path: string): TrustedFolder {
     throw new Error(`Folder does not exist: ${path}`);
   }
   if (!statSync(real).isDirectory()) throw new Error(`Not a directory: ${path}`);
-  if (real === sep) throw new Error("Refusing to trust the filesystem root. Set Repository hooks to “Whenever code execution is allowed” instead.");
+  if (real === sep) throw new Error("Refusing to trust the filesystem root. Set Repository Hooks (Settings → API → Claude) to “In every folder” instead.");
   const folders = readTrustedFolders();
   const existing = folders.find((f) => f.path === real);
   if (existing) return existing;
@@ -245,6 +245,14 @@ export interface RepoExecutableConfig {
   helpers: string[];
   /** Servers named in `.mcp.json` in cwd or any parent. */
   mcpJsonServers: string[];
+  /** Each `.mcp.json` those names come from, nearest first; `inParent` when it isn't in cwd itself. */
+  mcpJsonSources: McpJsonSource[];
+}
+
+export interface McpJsonSource {
+  path: string;
+  servers: string[];
+  inParent: boolean;
 }
 
 function readJsonObject(file: string): Record<string, unknown> | undefined {
@@ -265,20 +273,30 @@ function selfAndAncestors(dir: string): string[] {
   }
 }
 
-/** Names of the stdio/remote servers in every `.mcp.json` the CLI reads for `cwd` (cwd and its parents, as given and as realpath). */
-export function mcpJsonServerNames(cwd: string): string[] {
+/** Every `.mcp.json` the CLI reads for `cwd` (cwd and its parents, as given and as realpath), nearest first. */
+export function mcpJsonSources(cwd: string): McpJsonSource[] {
+  const own = new Set([resolve(cwd)]);
   const dirs = new Set(selfAndAncestors(cwd));
   try {
-    for (const d of selfAndAncestors(realpathSync(resolve(cwd)))) dirs.add(d);
+    const real = realpathSync(resolve(cwd));
+    own.add(real);
+    for (const d of selfAndAncestors(real)) dirs.add(d);
   } catch {
     /* missing cwd: the literal chain is all there is */
   }
-  const names = new Set<string>();
+  const out: McpJsonSource[] = [];
   for (const d of dirs) {
     const servers = readJsonObject(join(d, ".mcp.json"))?.mcpServers;
-    if (servers && typeof servers === "object" && !Array.isArray(servers)) for (const name of Object.keys(servers)) names.add(name);
+    if (servers && typeof servers === "object" && !Array.isArray(servers) && Object.keys(servers).length > 0) {
+      out.push({ path: join(d, ".mcp.json"), servers: Object.keys(servers).sort(), inParent: !own.has(d) });
+    }
   }
-  return [...names].sort();
+  return out;
+}
+
+/** Names of the servers in every `.mcp.json` the CLI reads for `cwd`. */
+export function mcpJsonServerNames(cwd: string): string[] {
+  return [...new Set(mcpJsonSources(cwd).flatMap((s) => s.servers))].sort();
 }
 
 /** What executable config `cwd` defines. Missing or malformed files count as defining nothing. */
@@ -295,7 +313,35 @@ export function scanRepoExecutableConfig(cwd: string): RepoExecutableConfig {
     if (s.statusLine || s.subagentStatusLine) statusLine = true;
     for (const key of REPO_HELPER_KEYS) if (typeof s[key] === "string" && (s[key] as string).trim() !== "") helpers.add(key);
   }
-  return { hookEvents: [...hookEvents].sort(), statusLine, helpers: [...helpers].sort(), mcpJsonServers: mcpJsonServerNames(cwd) };
+  const sources = mcpJsonSources(cwd);
+  return {
+    hookEvents: [...hookEvents].sort(),
+    statusLine,
+    helpers: [...helpers].sort(),
+    mcpJsonServers: [...new Set(sources.flatMap((x) => x.servers))].sort(),
+    mcpJsonSources: sources,
+  };
+}
+
+/** Where the user tier lives for a CLI given `env`: CLAUDE_CONFIG_DIR, else HOME/.claude. */
+function userConfigDir(env: Record<string, string | undefined>): string {
+  return env.CLAUDE_CONFIG_DIR?.trim() || join(env.HOME?.trim() || homedir(), ".claude");
+}
+
+/**
+ * The operator's own user-tier hooks and status line, which a locked-down
+ * session also turns off (`disableAllHooks` covers every tier). For display only.
+ */
+export function scanUserHookConfig(env: Record<string, string | undefined> = process.env): { hookEvents: string[]; statusLine: boolean } {
+  const s = readJsonObject(join(userConfigDir(env), "settings.json")) ?? {};
+  const hookEvents =
+    s.hooks && typeof s.hooks === "object" && !Array.isArray(s.hooks)
+      ? Object.entries(s.hooks)
+          .filter(([, m]) => Array.isArray(m) && m.length > 0)
+          .map(([e]) => e)
+          .sort()
+      : [];
+  return { hookEvents, statusLine: Boolean(s.statusLine || s.subagentStatusLine) };
 }
 
 export function definesAnything(scan: RepoExecutableConfig): boolean {
@@ -324,8 +370,7 @@ export interface RepoLockdownSettings {
  * why a `null` here would fail open.
  */
 export function repoLockdownSettings(cwd: string, env: Record<string, string | undefined> = process.env): RepoLockdownSettings {
-  const configDir = env.CLAUDE_CONFIG_DIR?.trim() || join(env.HOME?.trim() || homedir(), ".claude");
-  const user = readJsonObject(join(configDir, "settings.json")) ?? {};
+  const user = readJsonObject(join(userConfigDir(env), "settings.json")) ?? {};
   const pinned = (key: (typeof REPO_HELPER_KEYS)[number]): string => (typeof user[key] === "string" ? (user[key] as string) : "");
   const servers = mcpJsonServerNames(cwd);
   return {
