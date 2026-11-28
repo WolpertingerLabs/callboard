@@ -10,16 +10,13 @@ exports[`sendMessage queryOpts characterization > claude-code: agent session wit
     "info: Injected proxy tools (mode=local, alias=agent-caller)",
     "debug: Set MCP_KEY_ALIAS="agent-caller" for agent=keyed-agent",
     "info: Injected Callboard agent tools for agent="keyed-agent" (spec.name=callboard, 35 tools)",
-    "info: MCP servers for session: [fake-stdio(stdio), fake-missing(stdio), fake-http(http), computer_use(stdio), callboard-tools(stdio), mcp-proxy(stdio), callboard(stdio)], allowedTools: [mcp__fake-stdio__*, mcp__fake-missing__*, mcp__fake-http__*, mcp__callboard-tools__set_chat_status, mcp__callboard-tools__summon_user, mcp__callboard-tools__notify_user, mcp__callboard-tools__set_chat_title, mcp__callboard-tools__list_anthropic_models, mcp__callboard-tools__list_codex_models, mcp__callboard-tools__list_openrouter_models, mcp__callboard-tools__get_session_status, mcp__callboard-tools__continue_chat, mcp__callboard-tools__get_chat_tree, mcp__callboard-tools__list_pending_requests, mcp__callboard-tools__respond_to_request, mcp__callboard-tools__wait, mcp__callboard-tools__wait_condition_met, mcp__callboard-tools__list_model_aliases, mcp__callboard__talk_to_agent, mcp__callboard__deploy_agent, mcp__callboard__list_cron_jobs, mcp__callboard__create_cron_job, mcp__callboard__update_cron_job, mcp__callboard__list_triggers, mcp__callboard__create_trigger, mcp__callboard__update_trigger, mcp__callboard__get_activity, mcp__callboard__log_activity, mcp__callboard__list_agents, mcp__callboard__get_agent_info, mcp__callboard__create_agent, mcp__callboard__update_agent, mcp__callboard__list_themes, mcp__callboard__get_theme, mcp__callboard__describe_job_schema, mcp__callboard__create_job, mcp__callboard__update_job, mcp__callboard__spawn_job, mcp__callboard__respond_job_approval, mcp__callboard__resume_job_run, mcp__callboard__retry_job_step]",
+    "info: MCP servers for session: [fake-stdio(stdio), fake-missing(stdio), fake-http(http), computer_use(stdio), callboard-tools(stdio), mcp-proxy(stdio), callboard(stdio)], allowedTools: [mcp__callboard-tools__set_chat_status, mcp__callboard-tools__summon_user, mcp__callboard-tools__notify_user, mcp__callboard-tools__set_chat_title, mcp__callboard-tools__list_anthropic_models, mcp__callboard-tools__list_codex_models, mcp__callboard-tools__list_openrouter_models, mcp__callboard-tools__get_session_status, mcp__callboard-tools__continue_chat, mcp__callboard-tools__get_chat_tree, mcp__callboard-tools__list_pending_requests, mcp__callboard-tools__respond_to_request, mcp__callboard-tools__wait, mcp__callboard-tools__wait_condition_met, mcp__callboard-tools__list_model_aliases, mcp__callboard__talk_to_agent, mcp__callboard__deploy_agent, mcp__callboard__list_cron_jobs, mcp__callboard__create_cron_job, mcp__callboard__update_cron_job, mcp__callboard__list_triggers, mcp__callboard__create_trigger, mcp__callboard__update_trigger, mcp__callboard__get_activity, mcp__callboard__log_activity, mcp__callboard__list_agents, mcp__callboard__get_agent_info, mcp__callboard__create_agent, mcp__callboard__update_agent, mcp__callboard__list_themes, mcp__callboard__get_theme, mcp__callboard__describe_job_schema, mcp__callboard__create_job, mcp__callboard__update_job, mcp__callboard__spawn_job, mcp__callboard__respond_job_approval, mcp__callboard__resume_job_run, mcp__callboard__retry_job_step]",
     "debug: SDK query options — provider=claude-code, cwd=<work>, maxTurns=200, model=(default), resume=none",
   ],
   "request": {
     "options": {
       "abortController": "[AbortController]",
       "allowedTools": [
-        "mcp__fake-stdio__*",
-        "mcp__fake-missing__*",
-        "mcp__fake-http__*",
         "mcp__callboard-tools__set_chat_status",
         "mcp__callboard-tools__summon_user",
         "mcp__callboard-tools__notify_user",
@@ -601,16 +598,13 @@ exports[`sendMessage queryOpts characterization > claude-code: plugins + MCP + h
     "info: Built 1 hook callback(s) from enabled plugins",
     "info: Injected callboard-tools MCP server",
     "info: Injected proxy tools (mode=local, alias=default-caller)",
-    "info: MCP servers for session: [fake-stdio(stdio), fake-missing(stdio), fake-http(http), computer_use(stdio), callboard-tools(stdio), mcp-proxy(stdio)], allowedTools: [mcp__fake-stdio__*, mcp__fake-missing__*, mcp__fake-http__*, mcp__callboard-tools__set_chat_status, mcp__callboard-tools__summon_user, mcp__callboard-tools__notify_user, mcp__callboard-tools__set_chat_title, mcp__callboard-tools__list_anthropic_models, mcp__callboard-tools__list_codex_models, mcp__callboard-tools__list_openrouter_models, mcp__callboard-tools__get_session_status, mcp__callboard-tools__continue_chat, mcp__callboard-tools__get_chat_tree, mcp__callboard-tools__list_pending_requests, mcp__callboard-tools__respond_to_request, mcp__callboard-tools__wait, mcp__callboard-tools__wait_condition_met, mcp__callboard-tools__describe_job_schema, mcp__callboard-tools__create_job, mcp__callboard-tools__update_job, mcp__callboard-tools__spawn_job, mcp__callboard-tools__respond_job_approval, mcp__callboard-tools__resume_job_run, mcp__callboard-tools__retry_job_step, mcp__callboard-tools__list_model_aliases]",
+    "info: MCP servers for session: [fake-stdio(stdio), fake-missing(stdio), fake-http(http), computer_use(stdio), callboard-tools(stdio), mcp-proxy(stdio)], allowedTools: [mcp__callboard-tools__set_chat_status, mcp__callboard-tools__summon_user, mcp__callboard-tools__notify_user, mcp__callboard-tools__set_chat_title, mcp__callboard-tools__list_anthropic_models, mcp__callboard-tools__list_codex_models, mcp__callboard-tools__list_openrouter_models, mcp__callboard-tools__get_session_status, mcp__callboard-tools__continue_chat, mcp__callboard-tools__get_chat_tree, mcp__callboard-tools__list_pending_requests, mcp__callboard-tools__respond_to_request, mcp__callboard-tools__wait, mcp__callboard-tools__wait_condition_met, mcp__callboard-tools__describe_job_schema, mcp__callboard-tools__create_job, mcp__callboard-tools__update_job, mcp__callboard-tools__spawn_job, mcp__callboard-tools__respond_job_approval, mcp__callboard-tools__resume_job_run, mcp__callboard-tools__retry_job_step, mcp__callboard-tools__list_model_aliases]",
     "debug: SDK query options — provider=claude-code, cwd=<work>, maxTurns=7, model=opus, resume=none",
   ],
   "request": {
     "options": {
       "abortController": "[AbortController]",
       "allowedTools": [
-        "mcp__fake-stdio__*",
-        "mcp__fake-missing__*",
-        "mcp__fake-http__*",
         "mcp__callboard-tools__set_chat_status",
         "mcp__callboard-tools__summon_user",
         "mcp__callboard-tools__notify_user",

@@ -15,6 +15,13 @@ describe("categorizeClaudeTool", () => {
     expect(categorizeClaudeTool("Bash")).toBe("codeExecution");
     expect(categorizeClaudeTool("WebFetch")).toBe("webAccess");
     expect(categorizeClaudeTool("AskUserQuestion")).toBeNull();
-    expect(categorizeClaudeTool("mcp__thirdparty__do_thing")).toBe("fileWrite");
+    expect(categorizeClaudeTool("SomeFutureTool")).toBe("fileWrite");
+  });
+
+  it("gates every third-party MCP tool at codeExecution — a server picks its own names", () => {
+    expect(categorizeClaudeTool("mcp__thirdparty__do_thing")).toBe("codeExecution");
+    // A friendly-looking name buys nothing.
+    expect(categorizeClaudeTool("mcp__github__read_file")).toBe("codeExecution");
+    expect(categorizeClaudeTool("mcp__computer_use__cu_open")).toBe("computerControl");
   });
 });

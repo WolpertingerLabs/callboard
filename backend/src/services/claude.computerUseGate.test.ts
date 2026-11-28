@@ -197,3 +197,31 @@ it("a plugin MCP server named computer_use cannot re-open the allow-list bypass"
     rmSync(join(dataDir, "app-plugins.json"), { force: true });
   }
 });
+
+it("a third-party plugin MCP server is registered with no allow-list entry, so every call reaches canUseTool", async () => {
+  writeFileSync(
+    join(dataDir, "app-plugins.json"),
+    JSON.stringify({
+      scanRoots: [],
+      plugins: [
+        {
+          id: "third",
+          pluginPath: workDir,
+          marketplacePath: workDir,
+          scanRoot: workDir,
+          manifest: { name: "third" },
+          commands: [],
+          enabled: true,
+          mcpServers: [{ id: "third-gh", name: "github", sourcePluginId: "third", enabled: true, type: "stdio", command: "true", args: [] }],
+        },
+      ],
+    }),
+  );
+  try {
+    const options = await optionsForOneTurn();
+    expect(options.mcpServers?.github).toBeDefined();
+    expect((options.allowedTools ?? []).filter((p) => p.startsWith("mcp__github__"))).toEqual([]);
+  } finally {
+    rmSync(join(dataDir, "app-plugins.json"), { force: true });
+  }
+});

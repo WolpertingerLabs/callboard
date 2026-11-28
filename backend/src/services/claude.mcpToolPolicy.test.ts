@@ -321,3 +321,23 @@ describe("Codex: no per-call hook, so the handler asks", () => {
     expect(proxyCallTool).not.toHaveBeenCalled();
   });
 });
+
+describe("third-party MCP tools: gated at codeExecution", () => {
+  it("deny → refused without ending the turn; allow → allowed", async () => {
+    const denied = await chat({ ...ALLOW, codeExecution: "deny" });
+    expect(await denied.ask("mcp__github__create_issue", { title: "t" })).toMatchObject({ behavior: "deny", interrupt: false });
+    // A harmless-sounding name changes nothing.
+    expect(await denied.ask("mcp__github__read_file", { path: "x" })).toMatchObject({ behavior: "deny" });
+    const allowed = await chat(ALLOW);
+    expect(await allowed.ask("mcp__github__create_issue", { title: "t" })).toMatchObject({ behavior: "allow" });
+  });
+
+  it("ask → a permission prompt", async () => {
+    const c = await chat({ ...ALLOW, codeExecution: "ask" });
+    const controller = new AbortController();
+    const pending = c.options.canUseTool("mcp__github__create_issue", { title: "t" }, { signal: controller.signal });
+    await vi.waitFor(() => expect(c.events.some((e) => e.type === "permission_request")).toBe(true));
+    controller.abort();
+    await expect(pending).resolves.toMatchObject({ behavior: "deny" });
+  });
+});

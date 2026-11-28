@@ -56,6 +56,13 @@ export function categorizeClaudeTool(toolName: string): PermissionCategory | nul
     return null;
   }
 
+  // Third-party MCP servers (plugin `.mcp.json`). A server picks its own tool
+  // names, so a name says nothing about what a call does: a compromised or
+  // careless server needs no name trick to do anything its process can. Gate
+  // every one at the strictest axis. (Callboard's own servers never get here;
+  // `computer_use` is caught above.)
+  if (toolName.startsWith("mcp__")) return "codeExecution";
+
   // Default for unknown tools.
   //
   // "Conservative" is generous: `fileWrite` is not the strictest axis —
@@ -64,8 +71,9 @@ export function categorizeClaudeTool(toolName: string): PermissionCategory | nul
   // tightened, because on THIS path the unknown branch is nearly empty and the
   // change would be all risk and no benefit: callboard's own MCP tools never
   // reach it (their gates in `callboardToolPolicy.ts` decide them first), and
-  // the only real occupants across two months of production logs are
-  // third-party plugin MCP servers (26 calls) plus `Skill` and `Monitor` (24) — two Claude Code tools
+  // the only real occupants across two months of production logs were
+  // third-party plugin MCP servers (26 calls — now gated at codeExecution
+  // above) plus `Skill` and `Monitor` (24) — two Claude Code tools
   // that post-date this map. `Monitor` has since been filed under
   // codeExecution above; `Skill` should be added when someone confirms its
   // semantics.

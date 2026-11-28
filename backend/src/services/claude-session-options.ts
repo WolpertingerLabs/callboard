@@ -209,9 +209,19 @@ export function isCommandLaunchable(command: string, env: NodeJS.ProcessEnv = pr
   return pathEntries.some((dir) => isExecutableFile(pathJoin(dir, command)));
 }
 
+/**
+ * The enabled third-party MCP servers for a session.
+ *
+ * No allow-list entry: enabling a server is consent to having it, not to its
+ * tools running past the chat's policy. They used to be pre-approved with
+ * `mcp__<name>__*`, which the SDK applies before `canUseTool` runs, so a chat
+ * that denied `codeExecution` still ran them unasked. A server picks its own
+ * tool names, so nothing can be inferred from them: every call reaches
+ * `canUseTool` and is gated at `codeExecution` (`categorizeClaudeTool`).
+ */
 export function buildMcpServerOptions(
   scope?: SpaceAgentScope,
-): { mcpServers: Record<string, PluginMcpServerConfig>; allowedTools: string[]; resolvedEnvVars: Record<string, string> } | undefined {
+): { mcpServers: Record<string, PluginMcpServerConfig>; resolvedEnvVars: Record<string, string> } | undefined {
   try {
     // Same allowlist as buildPluginOptions: a plugin the space's scope leaves
     // out contributes no MCP servers either (e.g. Slack off in "Personal").
@@ -226,7 +236,6 @@ export function buildMcpServerOptions(
     }
 
     const serverConfig: Record<string, PluginMcpServerConfig> = {};
-    const allowedTools: string[] = [];
     // Collect all resolved env vars so they can be propagated to the CLI subprocess.
     // Plugins loaded by the CLI re-read .mcp.json and resolve ${VAR} templates from
     // process.env, so we must ensure these vars are present in the subprocess environment.
@@ -260,12 +269,11 @@ export function buildMcpServerOptions(
           ...(resolvedEnv && { env: resolvedEnv }),
         };
       }
-      allowedTools.push(`mcp__${server.name}__*`);
     }
 
     if (Object.keys(serverConfig).length === 0) return undefined;
 
-    return { mcpServers: serverConfig, allowedTools, resolvedEnvVars };
+    return { mcpServers: serverConfig, resolvedEnvVars };
   } catch (error) {
     log.warn(`Failed to build MCP server options: ${error}`);
     return undefined;
