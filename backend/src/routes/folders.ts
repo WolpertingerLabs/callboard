@@ -1,5 +1,17 @@
-import { Router } from "express";
+import { Router, type Request, type Response } from "express";
 import { folderService } from "../services/folder-service.js";
+import { requireSessionAuth } from "../auth.js";
+import { getAgentSettings, getApiEnvOverrides } from "../services/agent-settings.js";
+import {
+  decideRepoConfig,
+  isFolderTrusted,
+  normalizeClaudeProjectHooksMode,
+  readTrustedFolders,
+  scanRepoExecutableConfig,
+  scanUserHookConfig,
+  trustFolder,
+  untrustFolder,
+} from "../services/repo-config-trust.js";
 
 export const foldersRouter = Router();
 
@@ -97,5 +109,73 @@ foldersRouter.post("/clear-cache", (req, res) => {
   } catch (err: any) {
     console.error("Error clearing cache:", err);
     res.status(500).json({ error: "Failed to clear cache", details: err.message });
+  }
+});
+
+// ── Repository Claude config trust (H-02, services/repo-config-trust.ts) ─────
+// Keyed on the folder, never a workspace: trust is about what is in the
+// directory. Reading is open to any authenticated caller; granting or revoking
+// trust is session-only (a logged-in human), so a bearer key can't do it. There
+// is deliberately no callboard-tools MCP tool for it either: an agent must not
+// be able to trust the folder it is about to run in.
+
+function folderParam(v: unknown): string | undefined {
+  return typeof v === "string" && v.trim().startsWith("/") ? v.trim() : undefined;
+}
+
+foldersRouter.get("/repo-config", (req: Request, res: Response) => {
+  // #swagger.tags = ['Folders']
+  // #swagger.summary = 'Repository Claude config status'
+  // #swagger.description = 'What executable Claude config (hooks, statusLine, credential helpers, .mcp.json servers) a folder defines, whether it is trusted, and — given a codeExecution level — whether a Claude Code session there would run it.'
+  /* #swagger.parameters['folder'] = { in: 'query', required: true, type: 'string', description: 'Absolute folder path' } */
+  /* #swagger.parameters['codeExecution'] = { in: 'query', type: 'string', description: 'allow | ask | deny; include a decision for that level' } */
+  const folder = folderParam(req.query.folder);
+  if (!folder) return res.status(400).json({ error: "folder query parameter (an absolute path) is required" });
+  const settings = getAgentSettings();
+  const mode = normalizeClaudeProjectHooksMode(settings.claudeProjectHooks);
+  const trust = isFolderTrusted(folder);
+  const ce = req.query.codeExecution;
+  const codeExecution = ce === "allow" || ce === "ask" || ce === "deny" ? ce : undefined;
+  res.json({
+    folder,
+    trusted: trust.trusted,
+    ...(trust.root && { trustRoot: trust.root }),
+    mode,
+    defines: scanRepoExecutableConfig(folder),
+    // The operator's own hooks, off too in a locked-down session. Same env the
+    // session's CLI gets (claude.ts), so the same user tier.
+    userDefines: scanUserHookConfig({ ...process.env, ...getApiEnvOverrides(settings) }),
+    ...(codeExecution && { decision: decideRepoConfig({ cwd: folder, codeExecution, mode }) }),
+  });
+});
+
+foldersRouter.get("/trusted", (_req: Request, res: Response) => {
+  // #swagger.tags = ['Folders']
+  // #swagger.summary = 'List trusted folders'
+  res.json({ folders: readTrustedFolders() });
+});
+
+foldersRouter.post("/trust", requireSessionAuth, (req: Request, res: Response) => {
+  // #swagger.tags = ['Folders']
+  // #swagger.summary = 'Trust a folder'
+  // #swagger.description = 'Let Claude Code chats with Code execution Allow run this folder\'s own hooks, helpers and .mcp.json servers. Logged-in sessions only.'
+  const folder = folderParam(req.body?.folder);
+  if (!folder) return res.status(400).json({ error: "folder (an absolute path) is required" });
+  try {
+    res.json({ folder: trustFolder(folder) });
+  } catch (err) {
+    res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
+  }
+});
+
+foldersRouter.delete("/trust", requireSessionAuth, (req: Request, res: Response) => {
+  // #swagger.tags = ['Folders']
+  // #swagger.summary = 'Stop trusting a folder'
+  const folder = folderParam(req.body?.folder) ?? folderParam(req.query.folder);
+  if (!folder) return res.status(400).json({ error: "folder (an absolute path) is required" });
+  try {
+    res.json({ removed: untrustFolder(folder) });
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
   }
 });

@@ -22,7 +22,7 @@ import { query } from "@anthropic-ai/claude-agent-sdk";
 const cwd = mkdtempSync(join(tmpdir(), "callboard-pm-sdk-"));
 afterAll(() => rmSync(cwd, { recursive: true, force: true }));
 
-async function argvFor(permissionMode: "default" | undefined): Promise<string[]> {
+async function argvFor(permissionMode: "default" | undefined, extra: Record<string, unknown> = {}): Promise<string[]> {
   let args: string[] = [];
   const q = query({
     prompt: "unused",
@@ -31,6 +31,7 @@ async function argvFor(permissionMode: "default" | undefined): Promise<string[]>
       settingSources: ["user", "project", "local"],
       persistSession: false,
       ...(permissionMode && { permissionMode }),
+      ...extra,
       canUseTool: async () => ({ behavior: "deny", message: "test" }),
       spawnClaudeCodeProcess: (opts) => {
         args = opts.args;
@@ -65,5 +66,18 @@ describe("Agent SDK — permissionMode on the Claude Code command line", () => {
     // If a future SDK goes back to defaulting the flag, this fails and the
     // explicit value in claude.ts becomes belt-and-braces rather than load-bearing.
     expect(flagValue(await argvFor(undefined), "--permission-mode")).toBeUndefined();
+  });
+});
+
+describe("Agent SDK — options.settings on the Claude Code command line", () => {
+  it("passes the repo-config lockdown (repo-config-trust.ts) as --settings JSON with the same keys and values", async () => {
+    // claude.repoHooks.sdk.test.ts proves the CLI honours the object; this pins
+    // that the SDK still hands it over as a flag, which is the tier that
+    // outranks project and local settings.
+    const { repoLockdownSettings } = await import("../../../services/repo-config-trust.js");
+    const settings = repoLockdownSettings(cwd, { HOME: "/nonexistent" });
+    const raw = flagValue(await argvFor("default", { settings }), "--settings");
+    expect(raw).toBeDefined();
+    expect(JSON.parse(raw!)).toEqual(settings);
   });
 });

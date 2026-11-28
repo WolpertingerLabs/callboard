@@ -52,6 +52,8 @@ claude auth login
 
 To use an API key or a gateway token, set it under **Settings → API → Claude** instead. The "Claude Code Needs Credentials" dialog appears only when Callboard finds no credential at all.
 
+A folder's own `.claude` hooks, credential helpers and `.mcp.json` servers run only when the chat's Code execution is Allow and the folder is trusted; see [A folder's own Claude config](#in-a-chat).
+
 ### Codex
 
 The bundled `codex` binary is always available. What varies is the sign-in:
@@ -108,6 +110,13 @@ To turn the button off, set `allowEngineInstalls: false` in `~/.callboard/agent-
 
 - **Streaming:** text, thinking, tool calls and permission prompts, on any engine.
 - **Tool permissions:** set `allow`, `ask` or `deny` per chat on six axes: file read, file write, code execution, web access, Browser Use and Computer Use.
+- **A folder's own Claude config:** a repository's `.claude/settings.json` and `settings.local.json` can define hooks, a `statusLine` and credential helpers (`apiKeyHelper`, `awsCredentialExport`, `awsAuthRefresh`, `gcpAuthRefresh`, `otelHeadersHelper`, `proxyAuthHelper`), and a `.mcp.json` in it or in any parent directory can define MCP servers. Trusting a folder therefore also lets the servers in its parents' `.mcp.json` files run there. Claude Code runs all of these itself, before Callboard's tool permissions are asked, so Callboard decides at the start of every Claude Code session whether they may run:
+  - Code execution **Ask** or **Deny**: never. A hook can't be asked about.
+  - Code execution **Allow**: only in a folder you trust, by default. Trusting a folder covers everything under it and the git worktrees of the repo there (checked both ways, so a folder can't claim to be one), and every branch you check out in it, as with Claude Code's own folder trust. Trust a folder with `callboard trust [dir]` (`--list`, `--remove <dir>`) or `POST /api/folders/trust`; the list is `<data dir>/trusted-folders.json`, never the repo.
+  - The **Repository hooks** setting (`claudeProjectHooks`) changes the Allow case: `trusted` (the default), `always` (every folder, the behaviour before this setting existed) or `never`.
+  - Whenever a session isn't allowed to run folder config (every Ask or Deny chat, for example), **your own `~/.claude` hooks and status line are off in it too**, even in a folder that defines nothing: Claude Code's one switch for settings hooks covers every level. Callboard's own plugin hooks still run. The daemon log names what was held back, and why.
+  - A `.mcp.json` server added while a session runs isn't started by it; the next session start checks again.
+  - To get the old behaviour back: trust the folder, or set `claudeProjectHooks` to `always` (both still need Code execution Allow).
 - **Images:** drag in PNG, JPEG, GIF or WebP files, up to 10 MB each.
 - **Branches and worktrees:** pick a base branch, name a new branch (or generate a name from the prompt), and optionally run the chat in its own worktree.
 - **Diffs:** view the chat's working-tree diff file by file.
@@ -130,7 +139,7 @@ To turn the button off, set `allowEngineInstalls: false` in `~/.callboard/agent-
 - **Artifacts:** named, versioned HTML, SVG or markdown documents (the last 50 versions are kept). Agents save them with `save_artifact` and show them with `render_artifact`. Each artifact declares the most storage access it may have (`none`, `read` or `readwrite`); the storage key itself is chosen when it's rendered. Manage them under Settings → Artifacts. Each artifact also opens full-window at `/a/<id>?key=<storage-key>`.
 - **Custom skills:** skills you write under Settings → Skills are saved to `~/.callboard/custom-skills/skills/<name>/SKILL.md` and invoked as `callboard:<name>`.
 - **Model aliases:** one name, such as `planner`, that maps to a different model per engine. Aliases work anywhere a model is set.
-- **Plugins & MCP:** Callboard scans directories you register for Claude Code plugin marketplaces and picks up their commands, hooks and MCP servers. Plugins are toggled per directory.
+- **Plugins & MCP:** Callboard scans directories you register for Claude Code plugin marketplaces and picks up their commands, hooks and MCP servers. Plugins are toggled per directory. A per-directory plugin's own hooks follow the same rule as a folder's `.claude` hooks (see In a chat); app-wide plugins' hooks always run.
 - **Themes:** every UI colour is a CSS variable, with light and dark sets. Custom themes are files in `~/.callboard/themes/`, and an agent can generate one for you.
 - **API keys:** mint `cbk_` bearer tokens under Settings → Account for scripts. These keys can't perform human-only actions: minting more keys, changing a chat's Browser Use, Sandbox desktop or Computer Use setting or answering its prompts, changing settings (they can read them, with credentials masked), restarting the server or changing the password.
 
@@ -328,6 +337,7 @@ callboard config [--path]     Effective configuration (or just the file path)
 callboard set-password
 callboard sandbox build [--force] Build the Sandbox desktop image (Docker)
 callboard sandbox status      Docker, the image, running managed sandboxes
+callboard trust [dir]         Trust a folder's own Claude hooks/helpers (--list, --remove <dir>)
 callboard help
 callboard -v                  Version
 ```

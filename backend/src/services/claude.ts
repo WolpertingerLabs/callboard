@@ -22,6 +22,7 @@ import type { StreamEvent, TaskListItem } from "shared/types/index.js";
 import { TASK_LIST_TOOLS, normalizePermissions, normalizeReviewSettings, appendAttachmentBlocks } from "shared/types/index.js";
 import { buildAttachmentBlocks, titleSourceFor, type FileAttachment } from "./file-attachments.js";
 import { buildPluginOptions, buildMcpServerOptions, buildHookOptions, type PluginDescriptor } from "./claude-session-options.js";
+import { decideRepoConfig, definesAnything, repoLockdownSettings, scanRepoExecutableConfig, type RepoLockdownSettings } from "./repo-config-trust.js";
 import { buildCodexExtras, buildPiExtras, type ProviderOptionsContext } from "./provider-session-options.js";
 import { buildAgentToolsSpec, setMessageSender } from "./agent-tools.js";
 import { buildCallboardToolsSpec, setCallboardMessageSender } from "./callboard-tools.js";
@@ -1031,6 +1032,8 @@ type SessionQueryOptions = {
   mcpServers?: Record<string, McpServerEntry>;
   allowedTools?: string[];
   hooks?: NonNullable<ReturnType<typeof buildHookOptions>>;
+  /** Flag-tier Claude Code settings (`--settings`): the repo-config lockdown, see repo-config-trust.ts. */
+  settings?: RepoLockdownSettings;
   systemPrompt?: { type: "preset"; preset: "claude_code"; append: string };
   env: Record<string, string | undefined>;
   canUseTool: ReturnType<typeof buildCanUseTool>;
@@ -1901,6 +1904,31 @@ async function runSendMessage(opts: SendMessageOptions, startToken?: symbol): Pr
       ? resolveModelAlias(chatModel.trim(), "claude-code", agentSettings)
       : undefined;
 
+  // H-02: the folder's own `.claude/settings*.json` hooks, statusLine and
+  // credential helpers, and its `.mcp.json` servers, run inside the CLI before
+  // canUseTool is ever asked. Unless Code execution is Allow and the
+  // `claudeProjectHooks` mode admits this folder, the flag tier turns them off.
+  // Decided per session start, from the same effective permissions the tool
+  // policy reads. See repo-config-trust.ts.
+  let repoSettings: RepoLockdownSettings | undefined;
+  if (providerKind === "claude-code") {
+    const repoDecision = decideRepoConfig({
+      cwd: folder,
+      codeExecution: getDefaultPermissions()?.codeExecution ?? "deny",
+      mode: agentSettings.claudeProjectHooks,
+    });
+    if (!repoDecision.run) {
+      repoSettings = repoLockdownSettings(folder, { ...process.env, ...getApiEnvOverrides(agentSettings) });
+      const scan = scanRepoExecutableConfig(folder);
+      if (definesAnything(scan)) {
+        log.info(
+          `Repository Claude config not run (${repoDecision.reason}) in ${folder}: hooks=[${scan.hookEvents.join(",")}] ` +
+            `statusLine=${scan.statusLine} helpers=[${scan.helpers.join(",")}] mcpJson=[${scan.mcpJsonServers.join(",")}]`,
+        );
+      }
+    }
+  }
+
   const queryOpts: { prompt: string | AsyncIterable<unknown>; options: SessionQueryOptions } = {
     prompt: effectivePrompt,
     options: {
@@ -1909,6 +1937,8 @@ async function runSendMessage(opts: SendMessageOptions, startToken?: symbol): Pr
       ...claudeExecutableOptions(claudeExecutable),
       ...(claudeCodeModel ? { model: claudeCodeModel } : {}),
       settingSources: ["user", "project", "local"],
+      // Repo-config lockdown (H-02), above; absent when the folder's config may run.
+      ...(repoSettings ? { settings: repoSettings } : {}),
       // Always explicit. Agent SDK ≥ 0.3.286 leaves an omitted mode to Claude
       // Code, which then takes `permissions.defaultMode` from the settings
       // loaded above: a repo committing `acceptEdits` ran Write/Edit without
