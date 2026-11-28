@@ -1,5 +1,14 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, rmSync, statSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
+import { describe, it, expect, beforeEach, afterEach, vi, type MockInstance } from 'vitest';
+import {
+  mkdtempSync,
+  rmSync,
+  statSync,
+  readFileSync,
+  writeFileSync,
+  mkdirSync,
+  readdirSync,
+  chmodSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -301,9 +310,22 @@ describe('session store rejects prototype-chain and malformed tokens', () => {
     expect(getSession('__proto__')).toBeUndefined();
     expect(extendSession('__proto__', Date.now() + 60_000)).toBe(false);
     expectPrototypeClean();
-    // A non-hex key is never live, so cleanup removes it.
-    expect(cleanupExpiredSessions()).toBe(0);
+    // A key that isn't a well-formed token can never be presented, so cleanup removes it even
+    // though its expiry is in the future.
+    expect(cleanupExpiredSessions()).toBe(1);
+    expect(readFileSync(sessionsFile(), 'utf-8')).not.toContain('__proto__');
     expectPrototypeClean();
+  });
+
+  it('cleanup drops non-token keys but keeps live sessions', () => {
+    const live = 'd'.repeat(64);
+    writeSessionsFile(
+      `{"constructor":{"expires_at":9000000000000000,"created_at":0},` +
+        `"${live}":{"expires_at":9000000000000000,"created_at":0}}`,
+    );
+    expect(cleanupExpiredSessions()).toBe(1);
+    expect(getSession(live)).toBeDefined();
+    expect(readFileSync(sessionsFile(), 'utf-8')).not.toContain('constructor');
   });
 
   it('a non-object "sessions" value loads as an empty store', () => {
@@ -311,6 +333,91 @@ describe('session store rejects prototype-chain and malformed tokens', () => {
     expect(getSession('c'.repeat(64))).toBeUndefined();
     const t = createSession(Date.now() + 60_000);
     expect(getSession(t)).toBeDefined();
+  });
+});
+
+// ── Corrupt or wrong-shape sessions.json ────────────────────────────
+
+describe('a malformed sessions.json loads as an empty store', () => {
+  const live = 'e'.repeat(64);
+  const liveEntry = `{"${live}":{"expires_at":9000000000000000,"created_at":0}}`;
+  const CASES: [string, string][] = [
+    ['empty file', ''],
+    ['truncated JSON', `{"sessions":${liveEntry},"metadata":{"last_cl`],
+    ['top-level null', 'null'],
+    ['top-level number', '42'],
+    ['top-level string', '"sessions"'],
+    ['top-level array', `[${liveEntry}]`],
+    ['missing metadata', `{"sessions":${liveEntry}}`],
+    ['null metadata', `{"sessions":${liveEntry},"metadata":null}`],
+    ['missing sessions', '{"metadata":{"last_cleanup":0,"version":1}}'],
+    ['array sessions', '{"sessions":["x"],"metadata":{"last_cleanup":0,"version":1}}'],
+  ];
+
+  let warn: MockInstance<typeof console.warn>;
+  beforeEach(() => {
+    warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+  });
+  afterEach(() => {
+    warn.mockRestore();
+  });
+
+  for (const [name, contents] of CASES) {
+    it(`${name}: no session is accepted, nothing throws, and login works`, async () => {
+      await configurePassword('hunter2!!');
+      mkdirSync(join(tmpDataDir, 'data'), { recursive: true });
+      writeFileSync(sessionsFile(), contents);
+
+      // Fail closed: even a live-looking entry inside a wrong-shape file is not accepted.
+      expect(getSession(live)).toBeUndefined();
+      expect(extendSession(live, Date.now() + 60_000)).toBe(false);
+      expect(() => deleteSession(live)).not.toThrow();
+      expect(() => cleanupExpiredSessions()).not.toThrow();
+      const res = mockRes();
+      let called = false;
+      requireAuth(
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        mockReq({ cookies: { [SESSION_COOKIE_NAME]: live } }) as any,
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        res as any,
+        () => {
+          called = true;
+        },
+      );
+      expect(called).toBe(false);
+      expect(res.statusCode).toBe(401);
+      expect(warn).toHaveBeenCalled();
+      expectPrototypeClean();
+
+      const login = mockRes();
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      await loginHandler(mockReq({ body: { password: 'hunter2!!' } }) as any, login as any);
+      expect(login.statusCode).toBe(200);
+      const token = login.cookies[SESSION_COOKIE_NAME].value;
+      expect(getSession(token)).toBeDefined();
+      expect(getSession(live)).toBeUndefined();
+      // The bad file has been replaced by a well-formed one.
+      const rewritten = JSON.parse(readFileSync(sessionsFile(), 'utf-8')) as {
+        sessions: Record<string, unknown>;
+        metadata: { version: number };
+      };
+      expect(Object.keys(rewritten.sessions)).toEqual([token]);
+      expect(rewritten.metadata.version).toBe(1);
+    });
+  }
+
+  it('saves atomically: no temp files left behind and the store stays 0600', () => {
+    for (let i = 0; i < 5; i++) createSession(Date.now() + 60_000);
+    const dataDir = join(tmpDataDir, 'data');
+    expect(readdirSync(dataDir)).toEqual(['sessions.json']);
+    expect(statSync(sessionsFile()).mode & 0o777).toBe(0o600);
+  });
+
+  it('a save over a 0644 file leaves it 0600', () => {
+    createSession(Date.now() + 60_000);
+    chmodSync(sessionsFile(), 0o644);
+    createSession(Date.now() + 60_000);
+    expect(statSync(sessionsFile()).mode & 0o777).toBe(0o600);
   });
 });
 

@@ -1,5 +1,13 @@
 import { randomBytes } from 'node:crypto';
-import { readFileSync, writeFileSync, existsSync, mkdirSync, chmodSync } from 'node:fs';
+import {
+  readFileSync,
+  writeFileSync,
+  existsSync,
+  mkdirSync,
+  chmodSync,
+  renameSync,
+  rmSync,
+} from 'node:fs';
 import { dirname, join } from 'node:path';
 
 import { getConfigDir } from '../shared/config.js';
@@ -31,6 +39,10 @@ interface SessionsFile {
  * a "session" would then write `expires_at` onto `Object.prototype`. cookie-parser also turns
  * `j:`-prefixed cookie values into JSON objects, so callers must not assume the token is a string.
  */
+//
+// Three safeguards stand between a request value and the map: this format check, the
+// null-prototype map, and the own-key lookup. Each alone blocks the bypass; the redundancy is
+// intentional, so don't remove one because the others (or the tests) seem to cover it.
 const SESSION_TOKEN_RE = /^[0-9a-f]{64}$/;
 
 function isSessionToken(token: unknown): token is string {
@@ -41,33 +53,63 @@ function emptySessions(): Record<string, SessionData> {
   return Object.create(null) as Record<string, SessionData>;
 }
 
+function freshStore(): SessionsFile {
+  return { sessions: emptySessions(), metadata: { last_cleanup: Date.now(), version: 1 } };
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+/**
+ * Never throws on a bad file: an unreadable, unparseable or wrong-shape `sessions.json` loads as a
+ * fresh empty store (logged at warn), so a truncated file can't 500 every request, login included.
+ * This fails closed: an empty store holds no session, and the next save replaces the bad file.
+ */
 function loadSessions(): SessionsFile {
   const file = getSessionsFile();
   if (!existsSync(file)) {
-    const initial: SessionsFile = {
-      sessions: emptySessions(),
-      metadata: { last_cleanup: Date.now(), version: 1 },
-    };
+    const initial = freshStore();
     saveSessions(initial);
     return initial;
   }
-  const data = JSON.parse(readFileSync(file, 'utf-8')) as SessionsFile;
-  const stored: unknown = data.sessions;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(readFileSync(file, 'utf-8'));
+  } catch (err) {
+    console.warn(`[auth] ${file} is unreadable (${(err as Error).message}); using an empty store`);
+    return freshStore();
+  }
+  if (
+    !isPlainObject(parsed) ||
+    !isPlainObject(parsed.sessions) ||
+    !isPlainObject(parsed.metadata)
+  ) {
+    console.warn(`[auth] ${file} does not have the expected shape; using an empty store`);
+    return freshStore();
+  }
   // A null-prototype map has no inherited keys, and an own "__proto__" key parsed from the file
   // stays plain data when copied onto it.
-  data.sessions = Object.assign(
-    emptySessions(),
-    typeof stored === 'object' && stored !== null && !Array.isArray(stored) ? stored : {},
-  );
-  return data;
+  return {
+    sessions: Object.assign(emptySessions(), parsed.sessions),
+    metadata: parsed.metadata as SessionsFile['metadata'],
+  };
 }
 
+/** Atomic: writes a 0600 temp file in the same directory, then renames it over the store. */
 function saveSessions(data: SessionsFile): void {
   const file = getSessionsFile();
   mkdirSync(dirname(file), { recursive: true });
-  writeFileSync(file, JSON.stringify(data, null, 2), { mode: 0o600 });
-  // writeFileSync only applies mode on file creation; chmod on every write
-  // ensures stricter perms even if the file was created externally.
+  const tmp = `${file}.${process.pid}.${randomBytes(6).toString('hex')}.tmp`;
+  try {
+    writeFileSync(tmp, JSON.stringify(data, null, 2), { mode: 0o600, flag: 'wx' });
+    renameSync(tmp, file);
+  } catch (err) {
+    rmSync(tmp, { force: true });
+    throw err;
+  }
+  // The temp file is created 0600, but chmod anyway so the store stays 0600 even if the umask or
+  // filesystem ignored the mode.
   try {
     chmodSync(file, 0o600);
   } catch {
@@ -149,7 +191,8 @@ export function cleanupExpiredSessions(): number {
   const now = Date.now();
   let removed = 0;
   for (const [token, session] of Object.entries(data.sessions)) {
-    if (!isLive(session, now)) {
+    // Also drop keys that could never be presented (e.g. a hand-written "__proto__").
+    if (!isSessionToken(token) || !isLive(session, now)) {
       // eslint-disable-next-line @typescript-eslint/no-dynamic-delete -- token-keyed session store
       delete data.sessions[token];
       removed++;
