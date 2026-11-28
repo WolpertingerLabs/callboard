@@ -4,7 +4,11 @@
  *
  * Claude and OpenRouter gate tools *per call* (a `canUseTool` callback fires for
  * each invocation). Codex has no such hook — it decides what the agent may do up
- * front via two coarse `ThreadOptions` knobs, set once when the thread starts:
+ * front via two coarse `ThreadOptions` knobs, set once when the thread starts.
+ * (Callboard's own tools are the exception: they run in callboard's process,
+ * so their handlers check the chat's policy per call and raise the same
+ * permission prompt as the other engines — `guardSpecByPolicy`,
+ * services/permission-ceiling.ts.) The knobs:
  *
  *  - **`sandboxMode`** — the filesystem/exec sandbox the `codex exec` subprocess
  *    runs under (`read-only` | `workspace-write` | `danger-full-access`).

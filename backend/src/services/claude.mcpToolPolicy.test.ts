@@ -39,6 +39,15 @@ vi.mock("./proxy-singleton.js", async (importOriginal) => ({
   ensureCallerEnrolled: async () => true,
   getProxy: () => ({ callTool: proxyCallTool }),
 }));
+// Codex turns: no CLI probe, no catalog lookups.
+vi.mock("./codex-execution-route.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./codex-execution-route.js")>()),
+  resolveCodexExecutionRoute: async () => ({ route: "codex", injectedOpenRouter: false }),
+}));
+vi.mock("./reasoning-capabilities.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./reasoning-capabilities.js")>()),
+  assertStoredReasoningEffort: async () => undefined,
+}));
 vi.mock("./agent-settings.js", async (importOriginal) => ({
   ...(await importOriginal<typeof import("./agent-settings.js")>()),
   resolveDefaultCaller: () => "default-caller",
@@ -122,10 +131,10 @@ const ALLOW: DefaultPermissions = {
 };
 
 /** One finished turn of a new chat under `defaultPermissions`. */
-async function chat(defaultPermissions: DefaultPermissions) {
+async function chat(defaultPermissions: DefaultPermissions, provider: "claude-code" | "codex" = "claude-code") {
   const ctrl = recordingProvider();
-  setAgentProviderForTesting(ctrl.provider, "claude-code");
-  const emitter = await sendMessage({ prompt: "hello", folder: workDir, defaultPermissions } as never);
+  setAgentProviderForTesting(ctrl.provider, provider);
+  const emitter = await sendMessage({ prompt: "hello", folder: workDir, defaultPermissions, ...(provider === "codex" && { provider }) } as never);
   const events: StreamEvent[] = [];
   emitter.on("event", (e: StreamEvent) => events.push(e));
   await new Promise<void>((resolve, reject) => {
@@ -141,7 +150,7 @@ async function chat(defaultPermissions: DefaultPermissions) {
   const tool = (server: string, name: string) => {
     const found = ctrl.specs.get(server)?.tools.find((t) => t.name === name);
     if (!found) throw new Error(`no ${server}/${name} registered`);
-    return (args: Record<string, unknown>) => found.handler(args) as Promise<ToolCallResult>;
+    return (args: Record<string, unknown>, context?: { signal?: AbortSignal }) => found.handler(args, context) as Promise<ToolCallResult>;
   };
   const ask = (name: string, input: Record<string, unknown>) => options.canUseTool(name, input, { signal: new AbortController().signal });
   return { options, tool, ask, events, sessionId: ctrl.sessionId };
@@ -263,5 +272,52 @@ describe("the policy is live during a new chat's first session", () => {
     chatFileService.updateChatMetadata(record!.id, { defaultPermissions: { ...ALLOW, fileRead: "deny" } });
     expect(await c.ask("mcp__callboard-tools__read_session_messages", { chatId: "x" })).toMatchObject({ behavior: "deny" });
     expect(resultJson(await c.tool("callboard-tools", "read_session_messages")({ chatId: "x" }))).toMatchObject({ error: "permission_policy" });
+  });
+});
+
+describe("Codex: no per-call hook, so the handler asks", () => {
+  it("a gated tool under ask raises the same permission_request, and the handler waits for the answer", async () => {
+    const c = await chat({ ...ALLOW, fileRead: "ask" }, "codex");
+    const call = c.tool("callboard-tools", "save_storage_item")({ key: "codex-k", name: "n", source_path: secretFile, create_key: true });
+    await vi.waitFor(() => expect(c.events.some((e) => e.type === "permission_request")).toBe(true));
+    const request = c.events.find((e) => e.type === "permission_request") as StreamEvent & { toolName?: string };
+    expect(request.toolName).toBe("mcp__callboard-tools__save_storage_item");
+    // Nothing has run while the prompt is up.
+    expect(filesContaining(dataDir, SECRET)).toEqual([]);
+    const { respondToPermission } = await import("./pending-requests.js");
+    expect(respondToPermission(c.sessionId, false).ok).toBe(true);
+    expect(resultJson(await call)).toMatchObject({ error: "permission_policy", category: "fileRead" });
+    expect(filesContaining(dataDir, SECRET)).toEqual([]);
+  });
+
+  it("approving the prompt runs the call once", async () => {
+    const c = await chat({ ...ALLOW, fileWrite: "ask" }, "codex");
+    const marker = `CODEX-OK-${Date.now()}`;
+    const call = c.tool("callboard-tools", "save_storage_item")({ key: "codex-ok", name: "n", content: marker, create_key: true });
+    await vi.waitFor(() => expect(pendingRequests.has(c.sessionId)).toBe(true));
+    const { respondToPermission } = await import("./pending-requests.js");
+    expect(respondToPermission(c.sessionId, true).ok).toBe(true);
+    expect(resultJson(await call).error).toBeUndefined();
+    expect(filesContaining(dataDir, marker).length).toBeGreaterThan(0);
+  });
+
+  it("a cancelled call withdraws its prompt and is refused", async () => {
+    const c = await chat({ ...ALLOW, webAccess: "ask" }, "codex");
+    // Codex cancelling the MCP call (its own tool timeout, or the turn ending)
+    // aborts the handler's signal.
+    const controller = new AbortController();
+    const call = c.tool("mcp-proxy", "secure_request")({ method: "GET", url: "https://example.com" }, { signal: controller.signal });
+    await vi.waitFor(() => expect(pendingRequests.has(c.sessionId)).toBe(true));
+    controller.abort();
+    expect(resultJson(await call)).toMatchObject({ error: "permission_policy" });
+    expect(pendingRequests.has(c.sessionId)).toBe(false);
+    expect(proxyCallTool).not.toHaveBeenCalled();
+  });
+
+  it("deny is enforced without a prompt", async () => {
+    const c = await chat({ ...ALLOW, codeExecution: "deny" }, "codex");
+    expect(resultJson(await c.tool("mcp-proxy", "vault_get")({ name: "x" }))).toMatchObject({ error: "permission_policy" });
+    expect(c.events.some((e) => e.type === "permission_request")).toBe(false);
+    expect(proxyCallTool).not.toHaveBeenCalled();
   });
 });

@@ -22,7 +22,8 @@ import type { ToolServerSpec } from "../agents/ports/tools.js";
 import { ToolPermissionPolicy, type PermissionCategory } from "../agents/permissions/ToolPermissionPolicy.js";
 import { getCallboardGateResolver, getToolCategorizer } from "../agents/permissions/categorizers.js";
 import { CALLBOARD_SERVER_KEYS, isAlwaysUngated, type CallboardServerKey } from "../agents/permissions/callboardToolPolicy.js";
-import { guardSpecByPolicy } from "./permission-ceiling.js";
+import { guardSpecByPolicy, type PolicyAskMode } from "./permission-ceiling.js";
+import { CODEX_ASK_DEADLINE_MS } from "../agents/adapters/codex/toolAdapter.js";
 import { EventEmitter } from "events";
 import { chatFileService } from "./chat-file-service.js";
 import { findChat } from "../utils/chat-lookup.js";
@@ -466,8 +467,10 @@ export function buildFormattedPrompt(
  * are re-read per call, like `getDefaultPermissions`, so toggling them
  * mid-session applies to the next prompt.
  *
- * Codex never reaches here (no per-call hook — see codex/optionsAdapter.ts),
- * so neither answerer applies to Codex chats.
+ * Codex has no per-call hook (see codex/optionsAdapter.ts), so its own
+ * tools never reach `buildCanUseTool`. Its Callboard tools do reach the chain:
+ * their handlers ask through {@link buildAskChain} (`codexAsk` in
+ * `sendMessage`), so both answerers apply to those calls.
  */
 export interface PermissionReviewHooks {
   /**
@@ -514,7 +517,8 @@ export const STRICT_REVIEW_FALLBACK: PermissionReviewSettings & { approveAllowed
  * Uses a getter function for the tracking ID since it may change mid-session (new chat flow).
  *
  * The same callback serves pi (its permission adapter calls
- * it on "ask"), so the review chain below covers every engine except Codex.
+ * it on "ask"), so the review chain below covers every engine. Codex reaches
+ * the same chain ({@link buildAskChain}) only for Callboard's own tools.
  *
  * For an "ask", the chain is:
  *
@@ -570,6 +574,7 @@ function buildPermissionDecider(
   hookAskOverride?: { reason: string },
   review?: PermissionReviewHooks,
 ) {
+  const askChain = buildAskChain(emitter, getTrackingId, review);
   return async (
     toolName: string,
     input: Record<string, unknown>,
@@ -629,6 +634,34 @@ function buildPermissionDecider(
       }
     }
 
+    return askChain(toolName, input, { signal, suggestions, toolUseID, category, pendingCategories, skipAnswerers: !!hookOverrideReason });
+  };
+}
+
+/** What {@link buildAskChain}'s chain needs to know about one ask. */
+export interface AskChainContext {
+  signal: AbortSignal;
+  suggestions?: readonly unknown[];
+  toolUseID?: string;
+  /** The binding permission axis, or `null` (unknown tool / hook ask). */
+  category: PermissionCategory | null;
+  /** Every axis a multi-axis Callboard gate is asking about; a parent must allow all of them. */
+  pendingCategories?: readonly PermissionCategory[];
+  /** A PreToolUse hook asked: straight to the human, no reviewer or parent. */
+  skipAnswerers?: boolean;
+}
+
+/**
+ * The "ask" half of `buildCanUseTool`: the automated answerers, then the
+ * human prompt (see the chain in `buildCanUseTool`'s doc comment). Called by
+ * the Claude/pi decider once the policy says "ask", and by the Codex
+ * handler-side guard, which has no harness gate of its own
+ * (`guardSpecByPolicy`'s `onAsk`).
+ */
+export function buildAskChain(emitter: EventEmitter, getTrackingId: () => string, review?: PermissionReviewHooks) {
+  return async (toolName: string, input: Record<string, unknown>, ctx: AskChainContext): Promise<PermissionResult> => {
+    const { signal, suggestions, toolUseID, category, skipAnswerers } = ctx;
+    const pendingCategories = ctx.pendingCategories && ctx.pendingCategories.length > 1 ? [...ctx.pendingCategories] : undefined;
     // ── Automated answerers (see the chain in the doc comment) ──
     // Skipped entirely — no await, so the prompt is parked synchronously as
     // before — unless a hook is wired and one of the settings is on.
@@ -650,7 +683,7 @@ function buildPermissionDecider(
       reportAudit(outcome);
       return result;
     };
-    if (review && !hookOverrideReason && isReviewableTool(toolName)) {
+    if (review && !skipAnswerers && isReviewableTool(toolName)) {
       let settingsFallback = false;
       const readSettings = (): PermissionReviewSettings & { approveAllowed?: false } => {
         try {
@@ -1714,6 +1747,29 @@ async function runSendMessage(opts: SendMessageOptions, startToken?: symbol): Pr
     log.warn(`Computer-control tool registration unavailable: ${error instanceof Error ? error.message : "unknown error"}`);
   }
 
+  // Codex has no per-call permission hook, so a Callboard tool whose gate
+  // says "ask" asks from inside its handler, through the same chain
+  // (reviewer → parent → human prompt) `canUseTool` uses on the other
+  // engines. The call is held open meanwhile, so the prompt is withdrawn at
+  // CODEX_ASK_DEADLINE_MS, before Codex's own tool timeout, and when the run
+  // is aborted. `reviewHooks` is read per ask, so `.audit` assigned below
+  // still applies.
+  const codexAskChain = buildAskChain(emitter, () => trackingId, reviewHooks);
+  const codexAsk: PolicyAskMode = async (qualifiedName, input, { category, pending, signal }) => {
+    const deadline = AbortSignal.timeout(CODEX_ASK_DEADLINE_MS);
+    const combined = AbortSignal.any([abortController.signal, deadline, ...(signal ? [signal] : [])]);
+    if (combined.aborted) return { behavior: "deny", message: "the run was stopped" };
+    const result = await codexAskChain(qualifiedName, input, { signal: combined, category, pendingCategories: pending });
+    if (result.behavior === "allow") return { behavior: "allow" };
+    if (deadline.aborted) {
+      return {
+        behavior: "deny",
+        message: `the permission prompt was not answered within ${Math.round(CODEX_ASK_DEADLINE_MS / 60_000)} minutes; ask again once the user is back`,
+      };
+    }
+    return { behavior: "deny", message: result.message };
+  };
+
   // Exact `mcp__<key>__<tool>` names of Callboard tools that are ungated for
   // every input (callboardToolPolicy.ts). The only Callboard names the SDK may
   // approve before `canUseTool`; see the strip after the last `inject` below.
@@ -1742,7 +1798,7 @@ async function runSendMessage(opts: SendMessageOptions, startToken?: symbol): Pr
     noServer?: string,
   ): void => {
     try {
-      const spec = guardSpecByPolicy(buildSpec(), key, { getPermissions: getDefaultPermissions, onAsk: "harness" });
+      const spec = guardSpecByPolicy(buildSpec(), key, { getPermissions: getDefaultPermissions, onAsk: providerKind === "codex" ? codexAsk : "harness" });
       const server = agentProvider.buildToolServer(spec);
       if (server) {
         mcpServers[key] = server as McpServerEntry;

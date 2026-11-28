@@ -14,8 +14,11 @@ import { z } from "zod";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import type { AnyToolDefinition, ToolDefinition, ToolServerSpec } from "../../ports/tools.js";
+import type { DefaultPermissions } from "shared/types/index.js";
+import { guardSpecByPolicy } from "../../../services/permission-ceiling.js";
 import {
   CALLBOARD_TOOL_TIMEOUT_SEC,
+  CODEX_ASK_DEADLINE_MS,
   CODEX_TOOL_IDENTITY_NOTE,
   buildCodexToolServer,
   isCodexToolServerHandle,
@@ -60,6 +63,10 @@ describe("shimSpawnConfig", () => {
     // call open at all.
     expect(shimSpawnConfig("/tmp/x/s.sock").tool_timeout_sec).toBe(CALLBOARD_TOOL_TIMEOUT_SEC);
     expect(CALLBOARD_TOOL_TIMEOUT_SEC).toBeGreaterThan(MAX_WAIT_SECONDS);
+    // A gated call's permission prompt is withdrawn before Codex gives up on
+    // the call, so an approval can never run a call nobody is waiting for.
+    expect(CODEX_ASK_DEADLINE_MS).toBeLessThan(CALLBOARD_TOOL_TIMEOUT_SEC * 1000);
+    expect(CODEX_ASK_DEADLINE_MS).toBeGreaterThan(MAX_WAIT_SECONDS * 1000);
   });
 
   it("runs a .ts shim through the tsx loader (dev/test), a .js shim directly", () => {
@@ -212,4 +219,70 @@ describe.skipIf(process.env.CODEX_SANDBOX_NETWORK_DISABLED === "1")("live connec
       await client.close();
     }
   }, 20_000);
+
+  describe("the chat's permission policy holds over the real socket (H-01)", () => {
+    const ALLOW: DefaultPermissions = {
+      fileRead: "allow",
+      fileWrite: "allow",
+      codeExecution: "allow",
+      webAccess: "allow",
+      browserControl: "deny",
+      computerControl: "deny",
+      sandboxControl: "deny",
+    };
+    function storageSpec() {
+      const calls: unknown[] = [];
+      const tool: ToolDefinition<{ key: z.ZodString; source_path: z.ZodOptional<z.ZodString> }> = {
+        name: "save_storage_item",
+        description: "store",
+        inputSchema: { key: z.string(), source_path: z.string().optional() },
+        handler: async (args) => {
+          calls.push(args);
+          return { content: [{ type: "text", text: "stored" }] };
+        },
+      };
+      return { spec: specWith(tool), calls };
+    }
+    const text = (r: unknown) => ((r as { content: { text: string }[] }).content[0]?.text ?? "") as string;
+
+    it("deny: permission_policy, and the handler never runs", async () => {
+      const { spec, calls } = storageSpec();
+      const guarded = guardSpecByPolicy(spec, "callboard-tools", {
+        getPermissions: () => ({ ...ALLOW, fileRead: "deny" }),
+        onAsk: async () => ({ behavior: "allow" }),
+      });
+      const client = await connectClient(track(buildCodexToolServer(guarded)));
+      try {
+        const result = await client.callTool({ name: "save_storage_item", arguments: { key: "k", source_path: "/etc/passwd" } });
+        expect(text(result)).toContain("permission_policy");
+        expect(calls).toEqual([]);
+      } finally {
+        await client.close();
+      }
+    }, 20_000);
+
+    it("ask: an onAsk deny stops the call; an allow runs it once", async () => {
+      const { spec, calls } = storageSpec();
+      let answer: "allow" | "deny" = "deny";
+      const asked: string[] = [];
+      const guarded = guardSpecByPolicy(spec, "callboard-tools", {
+        getPermissions: () => ({ ...ALLOW, fileWrite: "ask" }),
+        onAsk: async (name) => {
+          asked.push(name);
+          return { behavior: answer };
+        },
+      });
+      const client = await connectClient(track(buildCodexToolServer(guarded)));
+      try {
+        expect(text(await client.callTool({ name: "save_storage_item", arguments: { key: "k" } }))).toContain("permission_policy");
+        expect(calls).toEqual([]);
+        answer = "allow";
+        expect(text(await client.callTool({ name: "save_storage_item", arguments: { key: "k" } }))).toBe("stored");
+        expect(calls).toHaveLength(1);
+        expect(asked).toEqual(["mcp__callboard-tools__save_storage_item", "mcp__callboard-tools__save_storage_item"]);
+      } finally {
+        await client.close();
+      }
+    }, 20_000);
+  });
 });
