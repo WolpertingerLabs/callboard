@@ -1,4 +1,3 @@
-import { randomBytes } from 'node:crypto';
 import type { Request, Response, NextFunction } from 'express';
 
 import {
@@ -46,8 +45,7 @@ function setSessionCookie(res: Response, token: string): void {
 
 /** Roll the session: extend server-side expiry and refresh the cookie. */
 function rollSession(token: string, res: Response): void {
-  extendSession(token, Date.now() + SESSION_TTL_MS);
-  setSessionCookie(res, token);
+  if (extendSession(token, Date.now() + SESSION_TTL_MS)) setSessionCookie(res, token);
 }
 
 // Best-effort startup cleanup. Skipped when no password is configured —
@@ -79,12 +77,11 @@ export async function loginHandler(req: Request, res: Response): Promise<void> {
     return;
   }
 
-  const token = randomBytes(32).toString('hex');
   const forwarded = req.headers['x-forwarded-for'];
   const firstForwarded =
     typeof forwarded === 'string' ? forwarded.split(',')[0]?.trim() : undefined;
   const ip = firstForwarded ?? req.ip;
-  createSession(token, Date.now() + SESSION_TTL_MS, ip);
+  const token = createSession(Date.now() + SESSION_TTL_MS, ip);
   setSessionCookie(res, token);
   res.json({ ok: true });
 }
@@ -109,9 +106,8 @@ export function checkAuthHandler(req: Request, res: Response): void {
     res.status(401).json({ authenticated: false });
     return;
   }
-  const entry = getSession(token);
-  if (!entry || Date.now() > entry.expires_at) {
-    if (entry) deleteSession(token);
+  // getSession rejects malformed tokens and deletes expired entries.
+  if (!getSession(token)) {
     res.status(401).json({ authenticated: false });
     return;
   }
@@ -166,9 +162,8 @@ export function requireAuth(req: Request, res: Response, next: NextFunction): vo
     return;
   }
 
-  const entry = getSession(token);
-  if (!entry || Date.now() > entry.expires_at) {
-    if (entry) deleteSession(token);
+  // getSession rejects malformed tokens and deletes expired entries.
+  if (!getSession(token)) {
     res.status(401).json({ error: 'Session expired' });
     return;
   }

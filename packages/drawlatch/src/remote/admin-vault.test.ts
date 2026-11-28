@@ -217,8 +217,7 @@ describe('auth', () => {
     expect(Object.keys(readVault().callers.alice.items)).toEqual(['gh']);
     expect(readVault().requests[0].status).toBe('pending');
 
-    const token = crypto.randomBytes(16).toString('hex');
-    createSession(token, Date.now() + 60_000);
+    const token = createSession(Date.now() + 60_000);
     const cookie = { cookie: `${SESSION_COOKIE_NAME}=${token}` };
     expect((await req('GET', '/vault/status', undefined, cookie)).status).toBe(200);
     expect((await req('GET', '/callers/alice/vault/items', undefined, cookie)).status).toBe(200);
