@@ -391,6 +391,24 @@ export interface AgentSettings {
   /** Codex sandbox mode, mapped onto the CLI's `--sandbox` flag. */
   codexSandboxMode?: "read-only" | "workspace-write" | "danger-full-access";
 
+  /**
+   * When Claude Code chats may run the executable configuration a folder brings
+   * with it: the hooks and `statusLine` in its `.claude/settings.json` and
+   * `settings.local.json`, the credential helpers there (`apiKeyHelper` and the
+   * like), and the stdio servers in `.mcp.json`.
+   *
+   * Whatever the mode, a chat whose Code execution is not Allow never runs them.
+   * With Allow:
+   * - `"trusted"` (the default, also what an absent value means): only in a
+   *   folder the operator has trusted (`backend/src/services/repo-config-trust.ts`).
+   * - `"always"`: in every folder, the behaviour before this setting existed.
+   * - `"never"`: in no folder.
+   *
+   * Withholding them also turns off the operator's own `~/.claude` hooks for
+   * that session: Claude Code's only switch for settings hooks covers every tier.
+   */
+  claudeProjectHooks?: "trusted" | "always" | "never";
+
   // ── Codex → OpenRouter endpoint routing ───────────────────────────
   // Run the NATIVE Codex harness against OpenRouter via a custom config.toml
   // model provider (wire_api="responses"). Takes precedence over codexAuthMode.

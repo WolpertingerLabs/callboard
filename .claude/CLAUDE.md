@@ -42,7 +42,7 @@ Enforced by `shared/types/stream.test.ts` against the committed `wire-surface.sn
 
 A **workspace** (`shared/types/workspace.ts`, `~/.callboard/workspaces/`) is where work happens: a `cwd`, its git isolation, and its lifecycle. Several workspaces may share one `cwd`; that is supported, not a bug. Everything cached, stored or keyed belongs on exactly one side of this line:
 
-- Anything the **directory** determines keys on `cwd` — git status, diff, file contents, branch list, worktree resolution, file-explorer listings. Two workspaces on one checkout seeing the same git state is _correct_.
+- Anything the **directory** determines keys on `cwd` — git status, diff, file contents, branch list, worktree resolution, file-explorer listings, folder trust for repo Claude config (`backend/src/services/repo-config-trust.ts`). Two workspaces on one checkout seeing the same git state is _correct_.
 - Anything the **workspace** owns keys on `workspaceId` — drafts, view state, composer attachments, per-context UI, diff-mode overrides, expand/collapse state.
 
 **Do not collapse the two.** Re-keying a directory-backed query by workspace makes two views of one git tree disagree; re-keying owned state by path leaks it between workspaces on the same folder.

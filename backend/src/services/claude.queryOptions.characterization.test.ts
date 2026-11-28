@@ -187,6 +187,7 @@ const { sendMessage } = await import("./claude.js");
 const { setAgentProviderForTesting, setSessionProvidersForTesting } = await import("../agents/factory.js");
 const { updateAgentSettings } = await import("./agent-settings.js");
 const { createAgent } = await import("./agent-file-service.js");
+const { trustFolder, untrustFolder } = await import("./repo-config-trust.js");
 
 createAgent({ name: "Keyed", alias: "keyed-agent", description: "has a caller", createdAt: 1, mcpKeyAlias: "agent-caller" } as never);
 createAgent({ name: "Bare", alias: "bare-agent", description: "no caller", createdAt: 1 } as never);
@@ -352,6 +353,7 @@ const SETTINGS_RESET = {
   codexOpenRouterApiKey: undefined,
   codexUseOpenRouter: undefined,
   codexSandboxMode: undefined,
+  claudeProjectHooks: undefined,
   openRouterApiKey: undefined,
   piProviderId: undefined,
   piApiKey: undefined,
@@ -410,6 +412,45 @@ describe("sendMessage queryOpts characterization", () => {
     const first = await turn({ agentAlias: "keyed-agent" });
     const resumed = await turn({ chatId: first.chatId, prompt: "again" });
     expect((resumed.request as { options: { permissionMode?: string } }).options.permissionMode).toBe("default");
+  });
+
+  describe("repository Claude config (H-02): `settings` carries the lockdown unless the folder's config may run", () => {
+    const ALLOW = { ...PERMS, codeExecution: "allow" };
+    type Opts = { options: { settings?: Record<string, unknown> } };
+    afterEach(() => {
+      untrustFolder(workDir);
+    });
+
+    it("code execution Allow in a trusted folder: no settings key", async () => {
+      trustFolder(workDir);
+      expect(await turn({ defaultPermissions: ALLOW })).toMatchSnapshot();
+    });
+
+    it("code execution Ask in a trusted folder: locked down, trust doesn't matter", async () => {
+      trustFolder(workDir);
+      expect(((await turn({ defaultPermissions: PERMS })).request as Opts).options.settings).toMatchObject({ disableAllHooks: true });
+    });
+
+    it("code execution Allow in an untrusted folder: locked down", async () => {
+      expect(((await turn({ defaultPermissions: ALLOW })).request as Opts).options.settings).toMatchObject({ disableAllHooks: true });
+    });
+
+    it('mode "always": Allow runs the config without trust, Ask still does not', async () => {
+      updateAgentSettings({ claudeProjectHooks: "always" } as never);
+      expect(((await turn({ defaultPermissions: ALLOW })).request as Opts).options.settings).toBeUndefined();
+      expect(((await turn({ defaultPermissions: PERMS })).request as Opts).options.settings).toMatchObject({ disableAllHooks: true });
+    });
+
+    it('mode "never": locked down even when Allow and trusted', async () => {
+      updateAgentSettings({ claudeProjectHooks: "never" } as never);
+      trustFolder(workDir);
+      expect(((await turn({ defaultPermissions: ALLOW })).request as Opts).options.settings).toMatchObject({ disableAllHooks: true });
+    });
+
+    it("codex and pi never get a settings key", async () => {
+      expect(((await turn({ provider: "codex", defaultPermissions: PERMS })).request as Opts).options.settings).toBeUndefined();
+      expect(((await turn({ provider: "pi", defaultPermissions: PERMS })).request as Opts).options.settings).toBeUndefined();
+    });
   });
 
   it("claude-code: no claude binary resolved", async () => {

@@ -66,6 +66,8 @@ try {
       scope: { type: "string" },
       digest: { type: "string" },
       "show-recipe": { type: "boolean", default: false },
+      list: { type: "boolean", default: false },
+      remove: { type: "string" },
     },
     strict: false,
     allowPositionals: true,
@@ -147,6 +149,13 @@ switch (subcommand) {
       await cmdSandbox();
     }
     break;
+  case "trust":
+    if (values.help) {
+      printTrustHelp();
+    } else {
+      await cmdTrust();
+    }
+    break;
   case "help": {
     printHelp();
     const latestVersion = await checkForUpdate();
@@ -160,6 +169,38 @@ switch (subcommand) {
 }
 
 // ── Commands ─────────────────────────────────────────────────────────
+
+// `callboard trust [dir] | --list | --remove <dir>`: which folders' own Claude
+// hooks, helpers and .mcp.json servers may run (in chats with Code execution
+// Allow; see backend/src/services/repo-config-trust.ts). Writes the same store
+// the daemon reads at every session start, so no restart is needed.
+async function cmdTrust() {
+  const trust = await import(join(PKG_ROOT, "backend/dist/services/repo-config-trust.js"));
+  if (values.list) {
+    const folders = trust.readTrustedFolders();
+    if (folders.length === 0) console.log("No trusted folders.");
+    for (const f of folders) console.log(`${f.path}  (since ${f.addedAt})`);
+    return;
+  }
+  if (values.remove !== undefined) {
+    if (typeof values.remove !== "string" || values.remove === "") {
+      console.error("Usage: callboard trust --remove <dir>");
+      process.exit(1);
+    }
+    const removed = trust.untrustFolder(resolve(values.remove));
+    console.log(removed ? `No longer trusted: ${resolve(values.remove)}` : `Not trusted: ${resolve(values.remove)}`);
+    return;
+  }
+  const dir = resolve(rawArgs.find((arg) => !arg.startsWith("-")) ?? process.cwd());
+  try {
+    const entry = trust.trustFolder(dir);
+    console.log(`Trusted: ${entry.path}`);
+    console.log("Claude Code chats there with Code execution Allow now run its .claude hooks, credential helpers and .mcp.json servers.");
+  } catch (err) {
+    console.error(`Error: ${err.message}`);
+    process.exit(1);
+  }
+}
 
 // `callboard sandbox build|status|profiles|rm`: the Sandbox desktop's images.
 // Building is only ever explicit (this command or Settings → Sandbox desktop);
@@ -981,6 +1022,7 @@ Commands:
   config         Show effective configuration
   set-password   Set or change the server password
   sandbox        Build or check the Sandbox desktop image and profiles (Docker)
+  trust          Let a folder's own Claude hooks and helpers run (see trust --help)
 
 Options:
   -h, --help     Show this help message
@@ -996,6 +1038,29 @@ Examples:
   callboard start --port 3000  Start on a custom port
   callboard status             Check if server is running
   callboard logs -n 100        View last 100 log lines
+`);
+}
+
+function printTrustHelp() {
+  console.log(`
+Usage: callboard trust [dir]
+       callboard trust --list
+       callboard trust --remove <dir>
+
+A folder's .claude/settings.json and settings.local.json can define hooks, a
+statusLine and credential helpers (apiKeyHelper and the like), and its
+.mcp.json can define MCP servers: all of them commands Claude Code runs on its
+own, before Callboard's tool permissions are asked. Callboard runs them only in
+chats whose Code execution is Allow, and by default only in trusted folders.
+
+  [dir]            Trust dir (default: the current directory), everything
+                   under it, and the verified git worktrees of a repo there
+  --list           List trusted folders
+  --remove <dir>   Stop trusting dir
+
+The Repository hooks setting (Settings → API → Claude) can instead run them
+whenever Code execution is Allow, or never. Takes effect at the next message;
+no restart needed.
 `);
 }
 

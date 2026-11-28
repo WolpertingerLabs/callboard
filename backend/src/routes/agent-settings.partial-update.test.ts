@@ -332,3 +332,19 @@ describe("PUT /api/agent-settings — read-aloud model and voice round-trip", ()
     expect(onDisk().openRouterTtsVoice).toBe("luna");
   });
 });
+
+describe("PUT /api/agent-settings — claudeProjectHooks (H-02)", () => {
+  it("stores always/never, clears to the default on trusted or anything unknown, and is left alone when omitted", async () => {
+    await put({ claudeProjectHooks: "always" });
+    expect(onDisk().claudeProjectHooks).toBe("always");
+    await put({ model: "claude-opus-5" });
+    expect(onDisk().claudeProjectHooks).toBe("always");
+    await put({ claudeProjectHooks: "never" });
+    expect(onDisk().claudeProjectHooks).toBe("never");
+    await put({ claudeProjectHooks: "trusted" });
+    expect(onDisk().claudeProjectHooks).toBeUndefined();
+    await put({ claudeProjectHooks: "always" });
+    await put({ claudeProjectHooks: "sometimes" });
+    expect(onDisk().claudeProjectHooks).toBeUndefined();
+  });
+});

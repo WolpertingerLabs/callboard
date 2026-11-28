@@ -260,6 +260,7 @@ agentSettingsRouter.put("/", requireSessionAuth, async (req: Request, res: Respo
     codexHome,
     codexPathOverride,
     codexSandboxMode,
+    claudeProjectHooks,
     codexUseOpenRouter,
     codexOpenRouterApiKey,
     codexOpenRouterBaseUrl,
@@ -576,6 +577,12 @@ agentSettingsRouter.put("/", requireSessionAuth, async (req: Request, res: Respo
       ...(codexHome !== undefined && { codexHome: normalize(codexHome) }),
       ...(codexPathOverride !== undefined && { codexPathOverride: normalize(codexPathOverride) }),
       ...(codexSandboxMode !== undefined && { codexSandboxMode: normalizeCodexSandboxMode(codexSandboxMode) }),
+      // When a folder's own Claude hooks/helpers/.mcp.json may run (H-02,
+      // repo-config-trust.ts). "trusted" is the default, so it is stored as
+      // absent, and an unknown value clears to it: never widens.
+      ...(claudeProjectHooks !== undefined && {
+        claudeProjectHooks: claudeProjectHooks === "always" || claudeProjectHooks === "never" ? claudeProjectHooks : undefined,
+      }),
       ...(codexUseOpenRouter !== undefined && { codexUseOpenRouter: normalizeBool(codexUseOpenRouter) }),
       ...(codexOpenRouterApiKey !== undefined && { codexOpenRouterApiKey: normalize(codexOpenRouterApiKey) }),
       ...(codexOpenRouterBaseUrl !== undefined && { codexOpenRouterBaseUrl: normalize(codexOpenRouterBaseUrl) }),
