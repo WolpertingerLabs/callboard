@@ -2,14 +2,21 @@
  * The permission ceiling: a chat cannot use the Callboard platform tools to get
  * work done with more authority than it has itself.
  *
- * Why the tools need it: the in-process tool servers (`callboard-tools`, and
- * `callboard` for agent sessions) are pre-approved on Claude Code
- * (`allowedTools.push("mcp__<key>__*")` in claude.ts) and run in-process on
- * every other engine, so calling one never reaches `canUseTool` or a sandbox.
- * The ceiling is checked inside the tools instead, against the calling
- * session's live effective policy (the getter its own `ToolPermissionPolicy`
- * decides with). A tool server built without that getter treats the caller as
- * `null` — ask on every axis — so a missing wire fails closed.
+ * Two layers, both checked inside the tools against the calling session's live
+ * effective policy (the getter its own `ToolPermissionPolicy` decides with). A
+ * tool server built without that getter treats the caller as `null` — ask on
+ * every axis — so a missing wire fails closed.
+ *
+ * 1. **The chat's own policy** ({@link guardSpecByPolicy}). Every Callboard
+ *    tool has a gate in `agents/permissions/callboardToolPolicy.ts` — the axes
+ *    a call needs, some raised by its arguments (`source_path`, `url`,
+ *    branch arguments). A call on a denied axis is refused before its handler
+ *    runs, on every engine. On Claude Code and pi the engine's per-call gate
+ *    (`canUseTool` / pi `tool_call`) has already asked the user by the time
+ *    the handler runs. Codex has no such gate: there the guard holds deny,
+ *    and an "ask" still runs unprompted, as before (see `PolicyAskMode`).
+ * 2. **Authority it would hand on** (the rest of this file) — for tools that
+ *    start, continue or approve work in another session.
  *
  * Order is deny < ask < allow, per axis. Both sides go through
  * `normalizePermissions`, so `null` (a chat created with no permissions) reads
@@ -17,6 +24,7 @@
  * `decidePermission` actually holds that chat to.
  *
  * What is covered:
+ * - Every Callboard tool call, against the chat's own policy ({@link guardSpecByPolicy}).
  * - `start_chat_session` — the child gets the stricter of allow-all and the
  *   caller, per axis; browser, computer and sandbox use are always denied ({@link capPermissions}).
  * - `continue_chat` — refused when the target is looser than the caller on any
@@ -29,16 +37,14 @@
  *   create/update/spawn/retry/resume, and approving a job's approval gate; on agent sessions also talk_to_agent,
  *   deploy_agent, cron jobs, triggers, create/update_agent) — refused unless the
  *   caller is itself allow-all on every built-in axis ({@link guardUnattendedTools}).
+ * - `write_custom_skill`, which changes what later runs (allow-all ones
+ *   included) are told — gated at fileWrite + codeExecution by the policy table.
  *
  * What is NOT covered:
  * - The unattended defaults themselves. Agents, cron jobs, triggers, job steps
  *   and talk_to_agent targets still run `unattendedPermissions()`. An allow-all
  *   caller passes every check above, so their behaviour is unchanged.
- * - A brand-new chat's own policy is read from its creation options for its
- *   whole first session (claude.ts `getDefaultPermissions`), so a permission
- *   change made mid-way through that first session is not seen until the next.
- * - Indirect influence on later allow-all runs that does not start one:
- *   `write_custom_skill`, or content an allow-all run later reads.
+ * - Indirect influence on later allow-all runs through content they later read.
  * - The global Codex sandbox setting for a chat's own session (separate finding).
  */
 import type { SandboxMode } from "@openai/codex-sdk";
@@ -46,7 +52,9 @@ import type { DefaultPermissions, PermissionLevel } from "shared/types/index.js"
 import { normalizePermissions } from "shared/types/index.js";
 import { resolveSandboxMode } from "../agents/adapters/codex/permissionAdapter.js";
 import { jsonResult } from "../agents/ports/tools.js";
-import type { AnyToolDefinition, ToolCallResult } from "../agents/ports/tools.js";
+import type { AnyToolDefinition, ToolCallResult, ToolServerSpec } from "../agents/ports/tools.js";
+import { callboardToolGate, decideGate, type CallboardServerKey } from "../agents/permissions/callboardToolPolicy.js";
+import type { PermissionCategory } from "../agents/permissions/ToolPermissionPolicy.js";
 import { unattendedPermissions } from "./session-spawn.js";
 
 const RANK: Record<PermissionLevel, number> = { deny: 0, ask: 1, allow: 2 };
@@ -180,9 +188,19 @@ export function unattendedRefusal(toolName: string, getPermissions: (() => Defau
  * reaches a prompt (`decidePermission` maps its "ask" to the service's own
  * gate), but would be refused here regardless unless the parent allows it.
  */
-export function parentApprovalRefusal(category: string | null | undefined, parentPermissions: DefaultPermissions | null | undefined): string | null {
+export function parentApprovalRefusal(
+  category: string | null | undefined,
+  parentPermissions: DefaultPermissions | null | undefined,
+  /** Further axes the call needs (a multi-axis Callboard tool gate): each must be `allow` too. */
+  alsoRequired?: readonly string[],
+): string | null {
   if (!category || !(AXES as readonly string[]).includes(category)) {
     return "This call has no permission category (an unknown tool), so there is no axis on which this chat could hold the authority to approve it. You may deny it; otherwise leave it for the user.";
+  }
+  for (const extra of alsoRequired ?? []) {
+    if (extra === category) continue;
+    const refusal = parentApprovalRefusal(extra, parentPermissions);
+    if (refusal) return refusal;
   }
   const axis = category as (typeof AXES)[number];
   const own = normalizePermissions(parentPermissions)[axis];
@@ -191,4 +209,79 @@ export function parentApprovalRefusal(category: string | null | undefined, paren
     `This chat's own ${axis} permission is "${own}", not "allow", so it cannot approve a ${axis} call for a child — that would do through the child what ` +
     `this chat ${own === "ask" ? "would have to ask the user for" : "is denied"}. You may deny it; otherwise leave it for the user.`
   );
+}
+
+/** What a guard's own "ask" resolved to. */
+export interface PolicyAskResult {
+  behavior: "allow" | "deny";
+  message?: string;
+}
+
+/**
+ * How {@link guardSpecByPolicy} treats a call the policy says to ask about.
+ *
+ * - `"harness"` — the engine's per-call gate (Claude `canUseTool`, pi
+ *   `tool_call`) already asked and the user approved, or the call would not
+ *   have reached the handler. Run it; enforce only deny.
+ * - a function — there is no per-call gate (Codex). Ask through it; run the
+ *   handler only on allow.
+ */
+export type PolicyAskMode =
+  | "harness"
+  | ((
+      qualifiedName: string,
+      input: Record<string, unknown>,
+      ctx: { category: PermissionCategory; pending: PermissionCategory[]; signal?: AbortSignal },
+    ) => Promise<PolicyAskResult>);
+
+/**
+ * Wrap every handler of a Callboard tool server so a call is checked against
+ * the chat's live policy and the tool's gate (`callboardToolPolicy.ts`) before
+ * it runs. A denied call returns {@link policyRefusal} and never reaches the
+ * handler.
+ *
+ * Applied in `inject()` (services/claude.ts) to every Callboard server on
+ * every engine, so this is the backstop that holds whatever an engine's own
+ * gate did. A missing getter reads as `null` — ask on every axis.
+ */
+export function guardSpecByPolicy(
+  spec: ToolServerSpec,
+  serverKey: CallboardServerKey,
+  opts: { getPermissions: (() => DefaultPermissions | null) | undefined; onAsk: PolicyAskMode },
+): ToolServerSpec {
+  return {
+    ...spec,
+    tools: spec.tools.map((tool) => ({
+      ...tool,
+      handler: async (args, context) => {
+        const input = args && typeof args === "object" ? (args as Record<string, unknown>) : {};
+        const gate = callboardToolGate(serverKey, tool.name, input) ?? ["codeExecution"];
+        const decided = decideGate(gate, opts.getPermissions?.() ?? null);
+        if (decided.decision === "allow") return tool.handler(args, context);
+        const category = decided.category ?? "codeExecution";
+        if (decided.decision === "deny") return policyRefusal(tool.name, category, "deny");
+        if (opts.onAsk === "harness") return tool.handler(args, context);
+        const answer = await opts.onAsk(`mcp__${serverKey}__${tool.name}`, input, { category, pending: decided.pending, signal: context?.signal });
+        if (answer.behavior === "allow") return tool.handler(args, context);
+        return policyRefusal(tool.name, category, "not_approved", answer.message);
+      },
+    })),
+  };
+}
+
+/**
+ * The refusal {@link guardSpecByPolicy} returns: the same shape as
+ * {@link unattendedRefusal}, so a model reads it, relays it and carries on.
+ */
+export function policyRefusal(toolName: string, category: PermissionCategory, reason: "deny" | "not_approved", detail?: string): ToolCallResult {
+  return jsonResult({
+    ok: false,
+    error: "permission_policy",
+    tool: toolName,
+    category,
+    message:
+      reason === "deny"
+        ? `${toolName} needs the ${category} permission, which is set to deny for this chat, so it was not run. Ask the user to allow ${category} for this chat, or to do this themselves.`
+        : `${toolName} needs the ${category} permission and was not approved, so it was not run${detail ? ` (${detail})` : ""}.`,
+  });
 }

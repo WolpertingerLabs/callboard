@@ -7,12 +7,22 @@ import { parseChatMetadata } from "../utils/chat-metadata.js";
 import { assertNativeAgentControllable, nativeAgentForChat } from "./codex-native-agents.js";
 import { beginComputerUseTurn, buildComputerUseToolsSpec } from "./computer-use-tools.js";
 import { getAgentProvider } from "../agents/factory.js";
-import { isInternalProvider, isRetiredProvider, RETIRED_PROVIDER_LABELS, type AgentProviderKind, type RetiredProviderKind, type AgentQuery, type InternalProviderKind } from "../agents/ports/AgentProvider.js";
+import {
+  isInternalProvider,
+  isRetiredProvider,
+  RETIRED_PROVIDER_LABELS,
+  type AgentProviderKind,
+  type RetiredProviderKind,
+  type AgentQuery,
+  type InternalProviderKind,
+} from "../agents/ports/AgentProvider.js";
 import type { EffortLevel } from "shared/types/index.js";
 import type { PermissionResult } from "../agents/adapters/claude-code/types.js";
 import type { ToolServerSpec } from "../agents/ports/tools.js";
 import { ToolPermissionPolicy, type PermissionCategory } from "../agents/permissions/ToolPermissionPolicy.js";
-import { getToolCategorizer } from "../agents/permissions/categorizers.js";
+import { getCallboardGateResolver, getToolCategorizer } from "../agents/permissions/categorizers.js";
+import { CALLBOARD_SERVER_KEYS, isAlwaysUngated, type CallboardServerKey } from "../agents/permissions/callboardToolPolicy.js";
+import { guardSpecByPolicy } from "./permission-ceiling.js";
 import { EventEmitter } from "events";
 import { chatFileService } from "./chat-file-service.js";
 import { findChat } from "../utils/chat-lookup.js";
@@ -41,13 +51,7 @@ import {
 import { describeDeniedTurnEnd, isRethrownTurnEndDiagnostic, isTurnEndDiagnosticOnly, type InterruptingDeny } from "./permission-turn-end.js";
 import { buildProxyToolsSpec } from "./proxy-tools.js";
 import { ensureCallerEnrolled, fetchProxyRoutes } from "./proxy-singleton.js";
-import {
-  getAgentSettings,
-  resolveAgentKeyAlias,
-  resolveDefaultCaller,
-  getApiEnvOverrides,
-  resolveModelAlias,
-} from "./agent-settings.js";
+import { getAgentSettings, resolveAgentKeyAlias, resolveDefaultCaller, getApiEnvOverrides, resolveModelAlias } from "./agent-settings.js";
 import { getClaudeCodeExecutablePath } from "./claude-binary.js";
 import { claudeExecutableOptions } from "./claude-executable-options.js";
 import { sanitizeInheritedAgentEnv } from "../agents/agentEnvPolicy.js";
@@ -60,7 +64,15 @@ import { reopenArchivedChildChain } from "./child-archive.js";
 import { clearListCaches } from "./list-caches.js";
 import { sessionRegistry } from "./session-registry.js";
 import { pendingRequests, USER_DENIED_MESSAGE, type PendingRequest } from "./pending-requests.js";
-import { detectHardStop, isReviewableTool, reviewerNotesFor, reviewToolCall, type ReviewOptions, type ReviewRequest, type ReviewVerdict } from "./permission-review.js";
+import {
+  detectHardStop,
+  isReviewableTool,
+  reviewerNotesFor,
+  reviewToolCall,
+  type ReviewOptions,
+  type ReviewRequest,
+  type ReviewVerdict,
+} from "./permission-review.js";
 import { startReviewAudit, type PermissionAuditHooks, type ReviewAuditResult, type ReviewAuditTrace } from "./permission-review-audit.js";
 import { redactToolInputForReview } from "./tool-input-redaction.js";
 import { notifyParentOfChildPrompt } from "./parent-answers.js";
@@ -76,6 +88,14 @@ import { createLogger } from "../utils/logger.js";
 import { promptSourceText, toPromptIterable } from "./session-spawn.js";
 
 const log = createLogger("claude");
+
+/**
+ * MCP server keys owned by Callboard's in-process servers. No allow-list
+ * pattern for them survives option assembly except the exact ungated names
+ * `inject` pre-approves: a configured server of the same name must not
+ * re-open a wildcard.
+ */
+const RESERVED_TOOL_SERVER_KEYS: readonly string[] = [...CALLBOARD_SERVER_KEYS, "computer_use"];
 
 export type { StreamEvent };
 
@@ -463,7 +483,7 @@ export interface PermissionReviewHooks {
   /** Injected in tests; defaults to {@link reviewToolCall}. */
   reviewer?: (req: ReviewRequest, opts: ReviewOptions) => Promise<ReviewVerdict>;
   /** Injected in tests; defaults to {@link notifyParentOfChildPrompt} (wakes the parent only if it could approve). */
-  notifyParent?: (parentChatId: string, childChatId: string, toolName: string, category: string | null) => void;
+  notifyParent?: (parentChatId: string, childChatId: string, toolName: string, category: string | null, pendingCategories?: readonly string[]) => void;
   /**
    * Ship each screened ask to drawlatch's audit log (permission-review-audit.ts).
    * Absent = no audit records. Never changes or delays a decision.
@@ -561,16 +581,22 @@ function buildPermissionDecider(
     // regardless of default permissions.
     const hookOverrideReason = hookAskOverride?.reason || "";
     let category: PermissionCategory | null = null;
+    // Every axis a Callboard tool's gate is still asking about — what a parent
+    // must itself allow to approve it. Absent for other tools (`category` only).
+    let pendingCategories: PermissionCategory[] | undefined;
     if (hookOverrideReason) {
       hookAskOverride!.reason = ""; // reset for next tool call
       log.info(`[PERM-DIAG] Hook override ASK: tool=${toolName}, reason=${hookOverrideReason}`);
       // Fall through to the permission prompt below
     } else {
       try {
-        const decided = toolPermissionPolicy.decide(toolName);
+        const decided = toolPermissionPolicy.decide(toolName, input);
         const { decision } = decided;
         category = decided.category;
-        log.info(`[PERM-DIAG] tool=${toolName}, category=${category}, decision=${decision}`);
+        if (decided.pending && decided.pending.length > 1) pendingCategories = decided.pending;
+        log.info(
+          `[PERM-DIAG] tool=${toolName}, category=${category}, decision=${decision}${decided.pending?.length ? `, pending=${decided.pending.join("+")}` : ""}`,
+        );
         // computerControl never decides "ask" here: a scoped grant/approval
         // belongs to the service, so `decidePermission` admits the transport
         // when Browser Use, Computer Use or Sandbox desktop is ask/allow (the
@@ -585,6 +611,15 @@ function buildPermissionDecider(
           // reason to abort the turn the way a denied write or shell is.
           if (category === "computerControl" || category === "browserControl" || category === "sandboxControl")
             return { behavior: "deny", message: "Auto-denied: Browser Use, Computer Use and Sandbox desktop are all denied for this chat", interrupt: false };
+          // A Callboard tool is the same: the handler-side guard refuses it the
+          // same way on every engine, and the model should relay "ask the user
+          // to allow X" rather than have its turn ended.
+          if (decided.callboardTool)
+            return {
+              behavior: "deny",
+              message: `Auto-denied: ${toolName} needs the ${category} permission, which is set to deny for this chat. Ask the user to allow ${category} for this chat, or to do this themselves.`,
+              interrupt: false,
+            };
           return { behavior: "deny", message: `Auto-denied by default ${category} policy`, interrupt: true };
         }
         // "ask" — fall through to the user-prompt path
@@ -608,7 +643,8 @@ function buildPermissionDecider(
     let auditVerdict: ReviewVerdict | undefined;
     let auditDowngrade: ReviewAuditResult["downgrade"];
     const reportAudit = (outcome: ReviewAuditResult["outcome"], requestId?: string): void => {
-      if (auditTrace && auditVerdict) auditTrace.result({ verdict: auditVerdict, outcome, ...(requestId && { requestId }), ...(auditDowngrade && { downgrade: auditDowngrade }) });
+      if (auditTrace && auditVerdict)
+        auditTrace.result({ verdict: auditVerdict, outcome, ...(requestId && { requestId }), ...(auditDowngrade && { downgrade: auditDowngrade }) });
     };
     const audited = (result: PermissionResult, outcome: ReviewAuditResult["outcome"]): PermissionResult => {
       reportAudit(outcome);
@@ -801,6 +837,7 @@ function buildPermissionDecider(
         resolve,
         requestId,
         category,
+        ...(pendingCategories && { pendingCategories }),
         ...(reviewerNotes && { reviewerNotes }),
         ...(reviewerVerdict && { reviewerVerdict }),
         ...(offeredToParent && { offeredToParent }),
@@ -810,7 +847,13 @@ function buildPermissionDecider(
       reportAudit(hardStop ? "human_only" : offeredToParent ? "offered_to_parent" : "escalated_to_human", requestId);
       if (offeredToParent) {
         try {
-          (review?.notifyParent ?? notifyParentOfChildPrompt)(offeredToParent, trackingId, toolName, category);
+          (review?.notifyParent ?? notifyParentOfChildPrompt)(
+            offeredToParent,
+            trackingId,
+            toolName,
+            category,
+            ...(pendingCategories ? [pendingCategories] : []),
+          );
         } catch (err) {
           log.warn(`[PERM-DIAG] could not notify parent ${offeredToParent} of ${toolName} prompt on ${trackingId}: ${err}`);
         }
@@ -1514,33 +1557,33 @@ async function runSendMessage(opts: SendMessageOptions, startToken?: symbol): Pr
 
   const formattedPrompt = buildFormattedPrompt(prompt, imageMetadata, providerKind);
 
+  // A live reader of this chat's stored record, for per-call decisions. Until
+  // the record exists the chat is on a temp tracking id (`new-…`) and nothing
+  // can have changed it yet, so its creation metadata is the truth; once the
+  // session id arrives, `trackingId` IS the record's session id, a direct read
+  // rather than getChat's by-id scan. Read live on every call — including
+  // during a brand-new chat's FIRST run, where spawned children spend most of
+  // their life — so a toggle applies to the next call.
+  const readLiveMetadata = liveChatMetadataReader({
+    isNewChat,
+    getTrackingId: () => trackingId,
+    chatId: opts.chatId,
+    initialMetadata,
+  });
+
   // Stored records are normalized on read: a legacy record may lack
   // `browserControl`/`computerControl`/`sandboxControl`, and absence must read as deny, never as "not set".
   // `null` (no permissions at all) stays null — the Codex/pi option builders
   // treat it as "use the SDK default", and decidePermission already denies
   // computer control for a missing axis.
+  //
+  // Live for new chats too: a permission change made during a new chat's
+  // first session applies from the next call, not the next session.
   const getDefaultPermissions = (): DefaultPermissions | null => {
-    if (isNewChat) {
-      // For new chats, use the permissions passed directly
-      log.info(`[PERM-DIAG] getDefaultPermissions: isNewChat=true, raw=${JSON.stringify(defaultPermissions)}`);
-      return defaultPermissions ? normalizePermissions(defaultPermissions) : null;
-    }
-    // Re-read from file so mid-conversation permission changes take effect immediately
-    try {
-      const freshChat = chatFileService.getChat(opts.chatId!);
-      if (freshChat) {
-        const freshMeta = JSON.parse(freshChat.metadata || "{}");
-        if (freshMeta.defaultPermissions) {
-          log.info(`[PERM-DIAG] getDefaultPermissions: isNewChat=false, fresh=${JSON.stringify(freshMeta.defaultPermissions)}`);
-          return normalizePermissions(freshMeta.defaultPermissions);
-        }
-      }
-    } catch (err) {
-      log.error(`[PERM-DIAG] Error re-reading permissions for ${opts.chatId}: ${err}`);
-    }
-    // Fall back to initial metadata if re-read fails
-    log.info(`[PERM-DIAG] getDefaultPermissions: isNewChat=false, fallback=${JSON.stringify(initialMetadata.defaultPermissions)}`);
-    return initialMetadata.defaultPermissions ? normalizePermissions(initialMetadata.defaultPermissions) : null;
+    const live = readLiveMetadata().defaultPermissions as DefaultPermissions | undefined;
+    const raw = live ?? (isNewChat ? defaultPermissions : (initialMetadata.defaultPermissions as DefaultPermissions | undefined));
+    log.info(`[PERM-DIAG] getDefaultPermissions: isNewChat=${isNewChat}, ${live ? "live" : "fallback"}=${JSON.stringify(raw ?? null)}`);
+    return raw ? normalizePermissions(raw) : null;
   };
 
   // Policy: provider-specific tool-name → category map, neutral allow/deny/ask
@@ -1566,24 +1609,15 @@ async function runSendMessage(opts: SendMessageOptions, startToken?: symbol): Pr
   // passes through this registry is what makes them run the identical function.
   // Same function is necessary but not sufficient — the two passes must also see
   // the same input, i.e. categorize the exact string passed as `toolName`.
-  const toolPermissionPolicy = new ToolPermissionPolicy(getToolCategorizer(providerKind), getDefaultPermissions);
-
-  // The review-chain settings and parent, read live from the stored record on
-  // every ask, so a toggle applies to the next prompt — including during a
-  // brand-new chat's FIRST run, where spawned children spend most of their
-  // life. Until the record exists the chat is on a temp tracking id (`new-…`)
-  // and nothing can have toggled it yet, so its creation metadata is the
-  // truth; once the session id arrives, `trackingId` IS the record's session
-  // id, a direct read rather than getChat's by-id scan.
   //
-  // (Unlike `getDefaultPermissions`, which keeps reading creation options for
-  // the whole first run — see permission-ceiling.ts "What is NOT covered".)
-  const readLiveMetadata = liveChatMetadataReader({
-    isNewChat,
-    getTrackingId: () => trackingId,
-    chatId: opts.chatId,
-    initialMetadata,
-  });
+  // Callboard's own tools are decided from their gate (callboardToolPolicy.ts)
+  // through a sibling registry, input-aware — which pi's two passes can both
+  // honour, because pass 2 receives the same input.
+  const toolPermissionPolicy = new ToolPermissionPolicy(getToolCategorizer(providerKind), getDefaultPermissions, getCallboardGateResolver(providerKind));
+
+  // The review-chain settings and parent are read live from the stored record
+  // on every ask too (`readLiveMetadata` above), so a toggle applies to the
+  // next prompt.
   // The current run's own prompt, when it is a plain string, plus the title —
   // the cheapest available "what is this chat doing" for the reviewer.
   const promptExcerpt = typeof prompt === "string" ? prompt.slice(0, 1500) : undefined;
@@ -1611,7 +1645,11 @@ async function runSendMessage(opts: SendMessageOptions, startToken?: symbol): Pr
     cwd: folder,
     getTaskExcerpt: () => {
       const title = readLiveMetadata().title;
-      return [typeof title === "string" && title ? `Chat title: ${title}` : "", promptExcerpt ? `Current request: ${promptExcerpt}` : ""].filter(Boolean).join("\n") || undefined;
+      return (
+        [typeof title === "string" && title ? `Chat title: ${title}` : "", promptExcerpt ? `Current request: ${promptExcerpt}` : ""]
+          .filter(Boolean)
+          .join("\n") || undefined
+      );
     },
   };
 
@@ -1664,38 +1702,56 @@ async function runSendMessage(opts: SendMessageOptions, startToken?: symbol): Pr
   // The name is reserved. A plugin whose `.mcp.json` server is also called
   // `computer_use` would have pushed `mcp__computer_use__*` onto the list above
   // and re-opened the bypass, since the in-process server replaces it under
-  // the same key. Strip every allow-list pattern for that server after the
-  // merge, whoever added it.
+  // the same key. Every allow-list pattern for a reserved server is stripped
+  // after the last merge, whoever added it (see RESERVED_TOOL_SERVER_KEYS).
   try {
     const server = agentProvider.buildToolServer(buildComputerUseToolsSpec(() => trackingId));
     if (server) {
       if (mcpServers["computer_use"]) log.warn('A configured MCP server named "computer_use" is shadowed by the built-in computer-control server');
       mcpServers["computer_use"] = server as McpServerEntry;
-      for (let i = allowedTools.length - 1; i >= 0; i--) if (allowedTools[i].startsWith("mcp__computer_use__")) allowedTools.splice(i, 1);
     }
   } catch (error) {
     log.warn(`Computer-control tool registration unavailable: ${error instanceof Error ? error.message : "unknown error"}`);
   }
 
+  // Exact `mcp__<key>__<tool>` names of Callboard tools that are ungated for
+  // every input (callboardToolPolicy.ts). The only Callboard names the SDK may
+  // approve before `canUseTool`; see the strip after the last `inject` below.
+  const preApprovedCallboardTools = new Set<string>();
+
   /**
-   * Register one in-process tool server: build its spec, let the provider wrap
-   * it, add it under `key` and auto-approve `mcp__<key>__*`. Call order is the
-   * order servers land in `mcpServers` and `allowedTools`. A failure is logged
-   * and skipped — one tool server never takes the session down.
+   * Register one in-process Callboard tool server: build its spec, wrap every
+   * handler in the chat's permission policy (`guardSpecByPolicy`), let the
+   * provider wrap it and add it under `key`.
+   *
+   * There is no `mcp__<key>__*` wildcard. The SDK approves `allowedTools`
+   * entries before `canUseTool` runs, which made the chat's policy unenforceable
+   * for these tools; only the tools ungated for every input are pre-approved,
+   * by exact name. Every other call reaches `canUseTool`, which decides it from
+   * the tool's gate and asks when the policy says ask. The handler guard holds
+   * deny on every engine, whatever the engine's own gate did.
+   *
+   * Call order is the order servers land in `mcpServers` and `allowedTools`. A
+   * failure is logged and skipped — one tool server never takes the session down.
    */
   const inject = (
-    key: string,
+    key: CallboardServerKey,
     buildSpec: () => ToolServerSpec,
     label: string,
     injected: string | ((spec: ToolServerSpec) => string),
     noServer?: string,
   ): void => {
     try {
-      const spec = buildSpec();
+      const spec = guardSpecByPolicy(buildSpec(), key, { getPermissions: getDefaultPermissions, onAsk: "harness" });
       const server = agentProvider.buildToolServer(spec);
       if (server) {
         mcpServers[key] = server as McpServerEntry;
-        allowedTools.push(`mcp__${key}__*`);
+        for (const tool of spec.tools) {
+          if (!isAlwaysUngated(key, tool.name)) continue;
+          const qualified = `mcp__${key}__${tool.name}`;
+          preApprovedCallboardTools.add(qualified);
+          allowedTools.push(qualified);
+        }
         log.info(typeof injected === "string" ? injected : injected(spec));
       } else if (noServer) {
         log.error(noServer);
@@ -1727,8 +1783,9 @@ async function runSendMessage(opts: SendMessageOptions, startToken?: symbol): Pr
           getModel: () => chatFileService.getModelOverride(trackingId),
           // The ceiling for start_chat_session / continue_chat: this session's
           // own effective policy, read live like every other permission check.
-          // These tools are pre-approved below, so the ceiling is what stops
-          // them from handing out more than this chat has.
+          // start_chat_session (without branch arguments) and continue_chat are
+          // ungated by the chat's own policy, so the ceiling is what stops them
+          // from handing out more than this chat has.
           getPermissions: getDefaultPermissions,
           // Children inherit modelReview as a minimum (start_chat_session).
           getReviewSettings: reviewHooks.getSettings,
@@ -1751,7 +1808,12 @@ async function runSendMessage(opts: SendMessageOptions, startToken?: symbol): Pr
   // ── Objective tools: injected only when explicit completion is required ──
   // Job steps are excluded — they report through complete_job_step above.
   if (requireCompletion && !isJobStepSession) {
-    inject("objective-tools", () => buildObjectiveToolsSpec(() => trackingId), "objective-tools server", "Injected objective-tools MCP server (explicit completion required)");
+    inject(
+      "objective-tools",
+      () => buildObjectiveToolsSpec(() => trackingId),
+      "objective-tools server",
+      "Injected objective-tools MCP server (explicit completion required)",
+    );
   }
 
   // ── Proxy tools: injected for ALL sessions (regular + agent) ──
@@ -1779,7 +1841,12 @@ async function runSendMessage(opts: SendMessageOptions, startToken?: symbol): Pr
       log.warn(`Caller enrollment for "${proxyKeyAlias}" failed: ${err.message}`);
     }
 
-    inject("mcp-proxy", () => buildProxyToolsSpec(proxyKeyAlias), "proxy tools server", `Injected proxy tools (mode=${agentSettings.proxyMode}, alias=${proxyKeyAlias})`);
+    inject(
+      "mcp-proxy",
+      () => buildProxyToolsSpec(proxyKeyAlias),
+      "proxy tools server",
+      `Injected proxy tools (mode=${agentSettings.proxyMode}, alias=${proxyKeyAlias})`,
+    );
   } else if (opts.agentAlias && !proxyKeyAlias) {
     log.info(`Agent "${opts.agentAlias}" has no caller alias assigned — proxy tools not injected`);
   }
@@ -1834,6 +1901,17 @@ async function runSendMessage(opts: SendMessageOptions, startToken?: symbol): Pr
       (spec) => `Injected Callboard agent tools for agent="${agentAlias}" (spec.name=${spec.name}, ${spec.tools.length} tools)`,
       `buildAgentToolsSpec produced no server for agent="${agentAlias}"`,
     );
+  }
+
+  // The Callboard server keys (and `computer_use`) are reserved. A plugin
+  // `.mcp.json` server with the same name is shadowed by the in-process one,
+  // but its `mcp__<key>__*` allow-list pattern would survive the merge and
+  // re-open the wildcard. Strip every pattern for these servers, whoever added
+  // it, except the exact ungated names pushed by `inject`.
+  for (let i = allowedTools.length - 1; i >= 0; i--) {
+    const pattern = allowedTools[i];
+    if (preApprovedCallboardTools.has(pattern)) continue;
+    if (RESERVED_TOOL_SERVER_KEYS.some((k) => pattern.startsWith(`mcp__${k}__`))) allowedTools.splice(i, 1);
   }
 
   const hasMcpServers = Object.keys(mcpServers).length > 0;

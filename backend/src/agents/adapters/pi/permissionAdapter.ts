@@ -44,16 +44,21 @@
  * they can disagree, a tool escalated by pass 1 can be silently auto-allowed by
  * pass 2. pi is the easy case, like the retired Cline adapter: `ToolCallEvent.toolName` is always a
  * real identifier from a closed set plus callboard's own tool names, and that
- * same string is what pass 2 receives. Both passes run
- * {@link categorizePiToolName} over the identical input. The only way to break it
- * would be to categorize from `event.input`, which pass 2 cannot see. Do not.
+ * same string — with the same `event.input` — is what pass 2 receives
+ * (`canUseTool(toolName, input)` → `ToolPermissionPolicy.decide(toolName, input)`).
+ * Both passes run the identical functions over the identical input:
+ * `callboardToolGateByBareName` for callboard's own tools, whose gate may depend
+ * on their arguments, then {@link categorizePiToolName} for everything else.
+ * Anything that decides from input must be reachable from both passes; pass 2
+ * gets the input only because `decidePiToolCall` forwards it unchanged.
  *
  * @see plans/pi-adapter.md
  * @see plans/pi-spike-findings.md (§2 — project trust; §3 — the gate, measured)
  */
 import type { ExtensionAPI, ExtensionFactory, ToolCallEvent, ToolCallEventResult, CreateAgentSessionServicesOptions } from "@earendil-works/pi-coding-agent";
 import type { DefaultPermissions } from "shared/types/index.js";
-import { decidePermission, type PermissionCategory } from "../../permissions/ToolPermissionPolicy.js";
+import { decidePermission, type PermissionCategory, type PermissionDecision } from "../../permissions/ToolPermissionPolicy.js";
+import { callboardToolGateByBareName, decideGate } from "../../permissions/callboardToolPolicy.js";
 import { isToolIdentifier, makeNameCategorizer, MOST_RESTRICTIVE_CATEGORY } from "../../permissions/nameCategorizer.js";
 import { createLogger } from "../../../utils/logger.js";
 
@@ -167,51 +172,9 @@ const EXACT_CATEGORIES: ReadonlyMap<string, PermissionCategory> = new Map<string
   // naming it makes the answer intentional rather than a default.
   ["powershell", "codeExecution"],
 
-  // Parity with the Claude map (and the retired OpenRouter and Cline ones), which special-case this
-  // same callboard tool. Under pi it arrives bare: `customTools` is an
-  // in-process array with no server prefix. Neither `render` nor `file` is a
-  // token in any family below, so without this entry it would fall through to
-  // `codeExecution` and prompt on every file preview.
-  ["render_file", "fileRead"],
-
-  // Storage + artifact tools (storage-artifact-tools.ts). Every name below
-  // already tokenizes to the right family, but the category is pinned here
-  // rather than inferred — except `render_artifact`, which tokenizes to
-  // nothing (like `render_file`) and would otherwise fall to `codeExecution`.
-  ["list_storage_keys", "fileRead"],
-  ["list_storage_items", "fileRead"],
-  ["read_storage_item", "fileRead"],
-  ["list_artifacts", "fileRead"],
-  ["read_artifact", "fileRead"],
-  ["render_artifact", "fileRead"],
-  ["create_storage_key", "fileWrite"],
-  ["save_storage_item", "fileWrite"],
-  ["delete_storage_item", "fileWrite"],
-  ["delete_storage_key", "fileWrite"],
-  ["save_artifact", "fileWrite"],
-  ["delete_artifact", "fileWrite"],
-
-  // drawlatch vault tools (proxy-tools.ts), pinned so no name falls to the
-  // token table by accident: `vault_get` tokenizes to nothing and would land on
-  // `codeExecution` only as the unknown-name default, and `vault_request_access`
-  // tokenizes to `webAccess` ("request") though it reaches no outside service.
-  // A tool's inputs, including secret `values`, can leave the chat on "ask"
-  // (reviewer, audit log, parent) — tool-input-redaction.ts covers that.
-  // Listing names and request status, never values: a read of stored metadata.
-  ["vault_list", "fileRead"],
-  ["vault_list_requests", "fileRead"],
-  // Change what is stored in the caller's vault, like the storage tools above.
-  ["vault_create", "fileWrite"],
-  ["vault_update", "fileWrite"],
-  ["vault_delete", "fileWrite"],
-  // Create or withdraw a request record in drawlatch for the operator to see.
-  // Grants nothing itself, so it is a stored write, not a web call.
-  ["vault_request_access", "fileWrite"],
-  ["vault_cancel_request", "fileWrite"],
-  // Puts a secret value into this chat's transcript. That is worth as much as
-  // whatever the secret unlocks, so it gets the strictest built-in axis rather
-  // than `fileRead`, which chats commonly allow outright.
-  ["vault_get", "codeExecution"],
+  // Callboard's own `customTools` (storage, vault, render_file, …) are not
+  // here: both passes decide them from their gate in
+  // `permissions/callboardToolPolicy.ts` before this table is consulted.
 ]);
 
 /**
@@ -233,9 +196,10 @@ const categorizeByName = makeNameCategorizer(EXACT_CATEGORIES);
  *  2. token match in the shared token table, most restrictive family first
  *  3. {@link MOST_RESTRICTIVE_CATEGORY}
  *
- * In the pi adapter the token fallback serves callboard's own `customTools`,
- * which surface under their bare names (`spawn_job`, `set_chat_title`). pi has
- * no MCP client, so unlike the retired Cline adapter there is no third-party tool
+ * callboard's own `customTools` surface bare (`spawn_job`, `set_chat_title`)
+ * but never get here: `callboardToolGateByBareName` decides them first, in both
+ * passes. The token fallback is left for any name no table knows. pi has no MCP
+ * client, so unlike the retired Cline adapter there is no third-party tool
  * surface for it to also cover — see the plan's Decision 5.
  *
  * Never returns `null` — see the header. The return type keeps `| null` only to
@@ -303,11 +267,21 @@ export async function decidePiToolCall(ctx: PiPermissionContext, event: ToolCall
     return { block: true, reason: "callboard could not identify this tool" };
   }
 
-  // One categorizer, one input — and the same `toolName` goes to `canUseTool`
-  // below, so pass 2 cannot reach a different answer.
-  const category = categorizePiToolName(toolName);
+  const input = event.input && typeof event.input === "object" ? (event.input as Record<string, unknown>) : {};
+
+  // One resolver, one input — and the same `toolName` and `input` go to
+  // `canUseTool` below, so pass 2 cannot reach a different answer.
   // Read at decision time, never at session start — see `getPermissions`.
-  const decision = decidePermission(category, ctx.getPermissions?.() ?? null);
+  const perms = ctx.getPermissions?.() ?? null;
+  const gate = callboardToolGateByBareName(toolName, input);
+  let category: PermissionCategory | null;
+  let decision: PermissionDecision;
+  if (gate !== undefined) {
+    ({ category, decision } = decideGate(gate, perms));
+  } else {
+    category = categorizePiToolName(toolName);
+    decision = decidePermission(category, perms);
+  }
   log.info(`[PERM-DIAG] pi tool=${toolName}, category=${category ?? "(none)"}, decision=${decision}`);
 
   // `undefined`, not `{ block: false }`: pi treats any handler result without
@@ -315,7 +289,13 @@ export async function decidePiToolCall(ctx: PiPermissionContext, event: ToolCall
   // "no opinion" shape.
   if (decision === "allow") return undefined;
   if (decision === "deny") {
-    return { block: true, reason: `Auto-denied by default ${category} policy` };
+    return {
+      block: true,
+      reason:
+        gate !== undefined
+          ? `Auto-denied: ${toolName} needs the ${category} permission, which is set to deny for this chat. Ask the user to allow ${category} for this chat, or to do this themselves.`
+          : `Auto-denied by default ${category} policy`,
+    };
   }
 
   if (!ctx.canUseTool) {
@@ -324,8 +304,6 @@ export async function decidePiToolCall(ctx: PiPermissionContext, event: ToolCall
     log.warn(`"ask" decision for ${toolName} with no canUseTool available — blocking`);
     return { block: true, reason: "No approval channel available for this run" };
   }
-
-  const input = event.input && typeof event.input === "object" ? (event.input as Record<string, unknown>) : {};
 
   try {
     const result = await ctx.canUseTool(toolName, input, { signal: ctx.signal });

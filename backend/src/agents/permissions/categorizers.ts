@@ -54,7 +54,8 @@
  */
 import { isComputerControlToolName } from "./computerControl.js";
 import type { AgentProviderKind } from "../ports/AgentProvider.js";
-import type { PermissionCategory } from "./ToolPermissionPolicy.js";
+import type { CallboardGateResolver, PermissionCategory } from "./ToolPermissionPolicy.js";
+import { callboardToolGateByBareName, claudeCallboardGate } from "./callboardToolPolicy.js";
 import { categorizeClaudeTool } from "../adapters/claude-code/permissionAdapter.js";
 import { categorizePiToolName } from "../adapters/pi/permissionAdapter.js";
 
@@ -102,4 +103,26 @@ export const TOOL_CATEGORIZERS: Record<AgentProviderKind, ToolCategorizer> = {
  */
 export function getToolCategorizer(kind: AgentProviderKind): ToolCategorizer {
   return TOOL_CATEGORIZERS[kind];
+}
+
+/**
+ * Provider kind → resolver from the name a tool call arrives under to its
+ * Callboard gate (`callboardToolPolicy.ts`). Exhaustive for the same reason
+ * as {@link TOOL_CATEGORIZERS}.
+ *
+ * - `claude-code` / `mock` see `mcp__<server>__<tool>`.
+ * - `pi` sees Callboard's `customTools` bare. Both of pi's passes run this
+ *   same resolver over the same `(toolName, input)`.
+ * - `codex` has no per-call harness gate: its Callboard tools are decided by
+ *   the handler-side guard (`guardSpecByPolicy`), so nothing reaches here.
+ */
+export const CALLBOARD_GATE_RESOLVERS: Record<AgentProviderKind, CallboardGateResolver> = {
+  "claude-code": claudeCallboardGate,
+  pi: callboardToolGateByBareName,
+  codex: () => undefined,
+  mock: claudeCallboardGate,
+};
+
+export function getCallboardGateResolver(kind: AgentProviderKind): CallboardGateResolver {
+  return CALLBOARD_GATE_RESOLVERS[kind];
 }

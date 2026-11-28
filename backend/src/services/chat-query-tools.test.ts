@@ -34,16 +34,12 @@ describe("read-only query tool binding", () => {
 });
 
 describe("query tool permission categories", () => {
-  it.each(["search_chats", "get_chat_view"])("classifies %s as read-only across name-based permission adapters", async (name) => {
-    const { categorizeClaudeTool } = await import("../agents/adapters/claude-code/permissionAdapter.js");
-    const { categorizePiToolName } = await import("../agents/adapters/pi/permissionAdapter.js");
-    const { makeNameCategorizer } = await import("../agents/permissions/nameCategorizer.js");
-    const qualified = `mcp__callboard-tools__${name}`;
-    expect(categorizeClaudeTool(qualified)).toBe("fileRead");
+  it.each(["search_chats", "get_chat_view"])("gates %s at fileRead on every engine (the shared Callboard table)", async (name) => {
+    const { getCallboardGateResolver } = await import("../agents/permissions/categorizers.js");
+    expect(getCallboardGateResolver("claude-code")(`mcp__callboard-tools__${name}`, {})).toEqual(["fileRead"]);
+    expect(getCallboardGateResolver("pi")(name, {})).toEqual(["fileRead"]);
     // A tokens-only categorizer (no exact table) as generic coverage.
-    for (const categorize of [categorizePiToolName, makeNameCategorizer()]) {
-      expect(categorize(name)).toBe("fileRead");
-      expect(categorize(qualified)).toBe("fileRead");
-    }
+    const { makeNameCategorizer } = await import("../agents/permissions/nameCategorizer.js");
+    expect(makeNameCategorizer()(name)).toBe("fileRead");
   });
 });

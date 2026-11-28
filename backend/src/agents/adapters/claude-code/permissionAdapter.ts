@@ -25,8 +25,9 @@ export function categorizeClaudeTool(toolName: string): PermissionCategory | nul
   // Web access
   if (["WebFetch", "WebSearch"].includes(toolName)) return "webAccess";
 
-  // Callboard platform tools
-  if (["mcp__callboard-tools__render_file", "mcp__callboard-tools__search_chats", "mcp__callboard-tools__get_chat_view"].includes(toolName)) return "fileRead";
+  // Callboard's own tools (`mcp__callboard-tools__*`, `mcp__mcp-proxy__*`, …)
+  // are not categorized here: `ToolPermissionPolicy` decides them from their
+  // gate in `permissions/callboardToolPolicy.ts` before this map is consulted.
 
   // Tools with no permission axis of their own.
   //
@@ -62,10 +63,9 @@ export function categorizeClaudeTool(toolName: string): PermissionCategory | nul
   // other three describe. Left as `fileWrite` deliberately rather than
   // tightened, because on THIS path the unknown branch is nearly empty and the
   // change would be all risk and no benefit: callboard's own MCP tools never
-  // reach it (they are auto-approved by the `mcp__callboard-tools__*`
-  // allowedTools pattern before `canUseTool` fires), and the only real
-  // occupants across two months of production logs are third-party plugin MCP
-  // servers (26 calls) plus `Skill` and `Monitor` (24) — two Claude Code tools
+  // reach it (their gates in `callboardToolPolicy.ts` decide them first), and
+  // the only real occupants across two months of production logs are
+  // third-party plugin MCP servers (26 calls) plus `Skill` and `Monitor` (24) — two Claude Code tools
   // that post-date this map. `Monitor` has since been filed under
   // codeExecution above; `Skill` should be added when someone confirms its
   // semantics.

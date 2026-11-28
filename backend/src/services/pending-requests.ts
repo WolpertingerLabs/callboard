@@ -75,6 +75,11 @@ export interface PendingRequest {
   offeredToParent?: string;
   /** Permission category the policy assigned, for the parent's authority ceiling. */
   category?: string | null;
+  /**
+   * Every axis a multi-axis Callboard tool gate asked about (`category` is the
+   * first). A parent must allow all of them to approve. Absent when one axis.
+   */
+  pendingCategories?: readonly string[];
   /** The model reviewer's (or pre-check's) reasoning, when one ran and passed the call on. */
   reviewerNotes?: string;
   reviewerVerdict?: "escalate" | "kill";
