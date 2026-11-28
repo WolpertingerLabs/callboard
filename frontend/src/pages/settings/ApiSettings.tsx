@@ -14,6 +14,7 @@ import {
   AlertTriangle,
   CheckCircle2,
   HardDrive,
+  ShieldCheck,
   Mic,
   Volume2,
 } from "lucide-react";
@@ -46,6 +47,7 @@ import {
 } from "./credentialMode";
 import EngineStatusCard, { EngineStatusDot } from "./EngineStatusCard";
 import ChatRetentionSection from "./ChatRetentionSection";
+import TrustedFoldersList from "./TrustedFoldersList";
 import type { EngineRecheckOutcome } from "./EngineStatusCard";
 import type { AgentSettings, OpenRouterModelInfo } from "shared/types/index.js";
 import { DEFAULT_VOICE_MODEL, type VoiceModelInfo } from "shared/types/voice.js";
@@ -917,6 +919,7 @@ export default function ApiSettings() {
     codexModel,
     codexHome,
     codexSandboxMode,
+    claudeProjectHooks,
     codexUseOpenRouter,
     codexOpenRouterApiKey,
     codexOpenRouterBaseUrl,
@@ -1691,6 +1694,40 @@ export default function ApiSettings() {
                 </>
               }
             />
+          </div>
+
+          {/* A folder's own Claude config (H-02, backend services/repo-config-trust.ts) */}
+          <div style={sectionStyle}>
+            <div style={headerStyle}>
+              <ShieldCheck size={16} style={{ color: "var(--accent-text)" }} />
+              <span style={{ fontSize: 14, fontWeight: 600, color: "var(--text)" }}>Repository Hooks</span>
+            </div>
+            <div style={subtitleStyle}>
+              A folder&rsquo;s <code style={{ fontSize: 11 }}>.claude/settings.json</code> and <code style={{ fontSize: 11 }}>settings.local.json</code> can
+              define hooks, a status line and credential helpers, and its <code style={{ fontSize: 11 }}>.mcp.json</code> MCP servers: commands Claude Code runs
+              before Callboard asks about any tool. They never run in a chat whose Code execution isn&rsquo;t Allow.
+            </div>
+            <div style={fieldWrap}>
+              <label htmlFor="claudeProjectHooks" style={labelStyle}>
+                With Code execution Allow, run them
+              </label>
+              <select
+                id="claudeProjectHooks"
+                value={claudeProjectHooks}
+                onChange={(e) => setField("claudeProjectHooks", e.target.value as typeof claudeProjectHooks)}
+                style={{ ...inputStyle, fontFamily: "inherit", cursor: "pointer" }}
+              >
+                <option value="trusted">In trusted folders only (default)</option>
+                <option value="always">In every folder</option>
+                <option value="never">Never</option>
+              </select>
+              <div style={helpStyle}>
+                While a folder&rsquo;s config is held back, your own <code style={{ fontSize: 11 }}>~/.claude</code> hooks are off in that chat too: Claude Code
+                has one switch for all of them. Callboard&rsquo;s plugin hooks still run. Trusting a repository covers its subfolders, its git worktrees and
+                every branch checked out there.
+              </div>
+            </div>
+            <TrustedFoldersList />
           </div>
 
           {/* Models */}

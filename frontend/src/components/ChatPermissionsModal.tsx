@@ -3,6 +3,7 @@ import { useState, useEffect } from "react";
 import { Shield, X } from "lucide-react";
 import ModalOverlay from "./ModalOverlay";
 import PermissionSettings from "./PermissionSettings";
+import RepoConfigNotice from "./RepoConfigNotice";
 import type { DefaultPermissions } from "../api";
 import type { PermissionReviewSettings } from "shared/types/permissions.js";
 import { updateChatPermissions } from "../api";
@@ -22,6 +23,8 @@ interface ChatPermissionsModalProps {
   /** Whether the chat has a parent — "Parent can answer" is greyed without one. */
   hasParent?: boolean;
   onReviewChange?: (review: PermissionReviewSettings) => void;
+  /** The folder the chat runs in, for the repository Claude config notice. */
+  folder?: string;
 }
 
 const REVIEW_OFF: PermissionReviewSettings = { modelReview: false, parentAnswers: false };
@@ -36,6 +39,7 @@ export default function ChatPermissionsModal({
   review = REVIEW_OFF,
   hasParent = false,
   onReviewChange,
+  folder,
 }: ChatPermissionsModalProps) {
   const [localPermissions, setLocalPermissions] = useState<DefaultPermissions>(() => normalizePermissions(permissions));
   const [localReview, setLocalReview] = useState<PermissionReviewSettings>(review);
@@ -151,6 +155,7 @@ export default function ChatPermissionsModal({
             provider={provider}
             {...(chatId && { review: { value: localReview, onChange: setLocalReview, parent: { available: hasParent || localReview.parentAnswers } } })}
           />
+          {folder && <RepoConfigNotice folder={folder} codeExecution={localPermissions.codeExecution} provider={provider} existingChat={!!chatId} />}
         </div>
 
         {/* Info text */}

@@ -100,6 +100,7 @@ describe("Settings → API Save payload", () => {
       codexHome: "",
       codexPathOverride: "",
       codexSandboxMode: "workspace-write",
+      claudeProjectHooks: "trusted",
       codexUseOpenRouter: true,
       codexOpenRouterApiKey: "",
       codexOpenRouterBaseUrl: "",

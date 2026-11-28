@@ -1504,6 +1504,44 @@ export async function clearFolderCache(): Promise<void> {
   await requestVoid("/folders/clear-cache", { method: "POST", error: "Failed to clear folder cache" });
 }
 
+// ── Repository Claude config trust (H-02; backend services/repo-config-trust.ts) ──
+
+export type RepoConfigReason = "trusted" | "always" | "code-execution-not-allowed" | "untrusted-folder" | "setting-never";
+
+export interface RepoConfigStatus {
+  folder: string;
+  trusted: boolean;
+  trustRoot?: string;
+  mode: "trusted" | "always" | "never";
+  /** What executable config the folder defines (never run by this query). */
+  defines: { hookEvents: string[]; statusLine: boolean; helpers: string[]; mcpJsonServers: string[] };
+  /** Present when a codeExecution level was asked about. */
+  decision?: { run: boolean; reason: RepoConfigReason; trustRoot?: string };
+}
+
+export interface TrustedFolder {
+  path: string;
+  addedAt: string;
+}
+
+export async function getRepoConfigStatus(folder: string, codeExecution?: "allow" | "ask" | "deny", signal?: AbortSignal): Promise<RepoConfigStatus> {
+  const params = new URLSearchParams({ folder });
+  if (codeExecution) params.set("codeExecution", codeExecution);
+  return request(`/folders/repo-config?${params}`, { error: "Failed to read the folder's Claude config", signal });
+}
+
+export async function listTrustedFolders(): Promise<TrustedFolder[]> {
+  return requestField("/folders/trusted", "folders", { error: "Failed to list trusted folders" });
+}
+
+export async function trustFolder(folder: string): Promise<TrustedFolder> {
+  return requestField("/folders/trust", "folder", { method: "POST", json: { folder }, error: "Failed to trust folder" });
+}
+
+export async function untrustFolder(folder: string): Promise<void> {
+  await requestVoid("/folders/trust", { method: "DELETE", json: { folder }, error: "Failed to stop trusting folder" });
+}
+
 // App-wide Plugins & MCP Servers API functions
 
 export async function getAppPlugins(): Promise<AppPluginsData> {
