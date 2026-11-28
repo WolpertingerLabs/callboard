@@ -63,6 +63,8 @@ export interface ApiSettingsForm {
   codexModel: string;
   codexHome: string;
   codexSandboxMode: "read-only" | "workspace-write" | "danger-full-access";
+  /** When a folder's own Claude hooks/helpers/.mcp.json may run (Code execution Allow only). */
+  claudeProjectHooks: "trusted" | "always" | "never";
   // Codex → OpenRouter endpoint routing
   codexUseOpenRouter: boolean;
   codexOpenRouterApiKey: string;
@@ -129,6 +131,7 @@ export function formFromSettings(s: AgentSettings): ApiSettingsForm {
     codexModel: s.codexModel ?? "",
     codexHome: s.codexHome ?? "",
     codexSandboxMode: s.codexSandboxMode ?? "workspace-write",
+    claudeProjectHooks: s.claudeProjectHooks ?? "trusted",
     // Stored flag only, for the reason above — and more sharply here, since a
     // detected Codex env with no endpoint override does not route at all.
     codexUseOpenRouter: Boolean(s.codexUseOpenRouter),
@@ -189,6 +192,7 @@ export function settingsFromForm(form: ApiSettingsForm): Partial<AgentSettings> 
     codexHome: form.codexHome,
     codexPathOverride: form.codexPathOverride,
     codexSandboxMode: form.codexSandboxMode,
+    claudeProjectHooks: form.claudeProjectHooks,
     codexUseOpenRouter: form.codexUseOpenRouter,
     codexOpenRouterApiKey: form.codexOpenRouterApiKey,
     codexOpenRouterBaseUrl: form.codexOpenRouterBaseUrl,

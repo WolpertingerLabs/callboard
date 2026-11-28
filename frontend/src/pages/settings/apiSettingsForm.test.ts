@@ -42,6 +42,7 @@ const FULL: AgentSettings = {
   codexModel: "gpt-x",
   codexHome: "/home/u/.codex2",
   codexSandboxMode: "danger-full-access",
+  claudeProjectHooks: "never",
   codexUseOpenRouter: true,
   codexOpenRouterApiKey: "sk-or-codex",
   codexOpenRouterBaseUrl: "https://or.example/codex",
@@ -64,13 +65,14 @@ describe("formFromSettings / settingsFromForm", () => {
     expect(form).toEqual(EMPTY_API_SETTINGS_FORM);
     expect(form.codexAuthMode).toBe("subscription");
     expect(form.codexSandboxMode).toBe("workspace-write");
+    expect(form.claudeProjectHooks).toBe("trusted");
     expect(form.claudeCodeUseOpenRouter).toBe(false);
     expect(form.apiKey).toBe("");
   });
 
   it("sends every field on Save — a snapshot, with blanks as empty strings", () => {
     const body = settingsFromForm(EMPTY_API_SETTINGS_FORM);
-    expect(Object.keys(body)).toHaveLength(43);
+    expect(Object.keys(body)).toHaveLength(44);
     expect(body.apiKey).toBe("");
     expect(body.codexAuthMode).toBe("subscription");
     expect(body.openRouterUtilityCompletions).toBe(false);

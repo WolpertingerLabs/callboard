@@ -5674,6 +5674,7 @@ export default function Chat({ onChatListRefresh, chatId: chatIdOverride, embedd
         review={chatReview ?? chatMeta.review}
         hasParent={!!chatMeta.parentChatId}
         onReviewChange={setChatReview}
+        folder={!id ? folder : chat?.folder}
       />
 
       <ForkHandoffModal

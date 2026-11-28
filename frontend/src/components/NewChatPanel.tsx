@@ -9,6 +9,7 @@ import { UI_AGENT_PROVIDER_KINDS } from "shared/types/providers.js";
 import { spaceLabel } from "./SpaceChip";
 import { spaceHasOwnDefaults, writesBrowserFallback } from "../utils/spaceDefaults";
 import PermissionSettings from "./PermissionSettings";
+import RepoConfigNotice from "./RepoConfigNotice";
 import "./NewChatPanel.css";
 import { useSystemInfo } from "../hooks/useSystemInfo";
 import ConfirmRemoveRecentDirectory from "./ConfirmRemoveRecentDirectory";
@@ -624,6 +625,7 @@ export default function NewChatPanel({ onClose }: NewChatPanelProps) {
                   review={{ value: { modelReview, parentAnswers: false }, onChange: (next) => userSetModelReview(next.modelReview) }}
                 />
               )}
+              {displayPath && <RepoConfigNotice folder={displayPath} codeExecution={defaultPermissions.codeExecution} provider={provider} />}
             </div>
 
             {/* Behavior Section — collapsible, default closed */}
