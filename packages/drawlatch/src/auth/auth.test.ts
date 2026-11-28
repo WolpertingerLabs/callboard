@@ -1,5 +1,15 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, rmSync, statSync, readFileSync } from 'node:fs';
+import { describe, it, expect, beforeEach, afterEach, vi, type MockInstance } from 'vitest';
+import {
+  mkdtempSync,
+  rmSync,
+  statSync,
+  readFileSync,
+  writeFileSync,
+  mkdirSync,
+  readdirSync,
+  chmodSync,
+  utimesSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -41,6 +51,8 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  // Safety net: a regression that pollutes Object.prototype must not cascade into other tests.
+  delete (Object.prototype as Record<string, unknown>).expires_at;
   rmSync(tmpDataDir, { recursive: true, force: true });
   delete process.env.MCP_CONFIG_DIR;
   delete process.env.AUTH_PASSWORD_HASH;
@@ -141,48 +153,326 @@ describe('password utils', () => {
 describe('sessions service', () => {
   it('round-trips create / get / delete', () => {
     const expiry = Date.now() + 60_000;
-    createSession('tok-a', expiry, '127.0.0.1');
-    const s = getSession('tok-a');
+    const tok = createSession(expiry, '127.0.0.1');
+    expect(tok).toMatch(/^[0-9a-f]{64}$/);
+    const s = getSession(tok);
     expect(s).toBeDefined();
     expect(s?.expires_at).toBe(expiry);
     expect(s?.ip).toBe('127.0.0.1');
 
-    deleteSession('tok-a');
-    expect(getSession('tok-a')).toBeUndefined();
+    deleteSession(tok);
+    expect(getSession(tok)).toBeUndefined();
   });
 
   it('extendSession updates expiry in place', () => {
-    createSession('tok-b', Date.now() + 1_000);
+    const tok = createSession(Date.now() + 1_000);
     const newExpiry = Date.now() + 99_999;
-    extendSession('tok-b', newExpiry);
-    expect(getSession('tok-b')?.expires_at).toBe(newExpiry);
+    expect(extendSession(tok, newExpiry)).toBe(true);
+    expect(getSession(tok)?.expires_at).toBe(newExpiry);
   });
 
   it('deleteAllSessionsExcept preserves only the named token', () => {
     const expiry = Date.now() + 60_000;
-    createSession('keep', expiry);
-    createSession('drop1', expiry);
-    createSession('drop2', expiry);
-    deleteAllSessionsExcept('keep');
-    expect(getSession('keep')).toBeDefined();
-    expect(getSession('drop1')).toBeUndefined();
-    expect(getSession('drop2')).toBeUndefined();
+    const keep = createSession(expiry);
+    const drop1 = createSession(expiry);
+    const drop2 = createSession(expiry);
+    deleteAllSessionsExcept(keep);
+    expect(getSession(keep)).toBeDefined();
+    expect(getSession(drop1)).toBeUndefined();
+    expect(getSession(drop2)).toBeUndefined();
   });
 
   it('cleanupExpiredSessions removes only expired entries', () => {
-    createSession('fresh', Date.now() + 60_000);
-    createSession('stale', Date.now() - 1_000);
+    const fresh = createSession(Date.now() + 60_000);
+    const stale = createSession(Date.now() - 1_000);
     expect(cleanupExpiredSessions()).toBe(1);
-    expect(getSession('fresh')).toBeDefined();
-    expect(getSession('stale')).toBeUndefined();
+    expect(getSession(fresh)).toBeDefined();
+    expect(getSession(stale)).toBeUndefined();
   });
 
   it('persists sessions file with mode 0600', () => {
-    createSession('perm', Date.now() + 60_000);
+    createSession(Date.now() + 60_000);
     const file = join(tmpDataDir, 'data', 'sessions.json');
     const stat = statSync(file);
     // Lower 9 bits should be rw------- = 0o600.
     expect(stat.mode & 0o777).toBe(0o600);
+  });
+});
+
+// ── Prototype-chain and malformed tokens (C-01) ─────────────────────
+
+const BAD_TOKENS: unknown[] = [
+  'constructor',
+  'toString',
+  '__proto__',
+  'prototype',
+  'hasOwnProperty',
+  'valueOf',
+  '',
+  'invalid',
+  'A'.repeat(64),
+  'a'.repeat(63),
+  'a'.repeat(65),
+  {},
+  { a: 1 },
+  ['x'],
+  123,
+];
+
+function sessionsFile(): string {
+  return join(tmpDataDir, 'data', 'sessions.json');
+}
+
+function writeSessionsFile(sessions: string): void {
+  mkdirSync(join(tmpDataDir, 'data'), { recursive: true });
+  writeFileSync(
+    sessionsFile(),
+    `{"sessions":${sessions},"metadata":{"last_cleanup":0,"version":1}}`,
+  );
+}
+
+function expectPrototypeClean(): void {
+  expect(Object.prototype.hasOwnProperty.call(Object.prototype, 'expires_at')).toBe(false);
+  expect(({} as Record<string, unknown>).expires_at).toBeUndefined();
+}
+
+describe('session store rejects prototype-chain and malformed tokens', () => {
+  it('createSession mints distinct 64-hex tokens', () => {
+    const a = createSession(Date.now() + 60_000);
+    const b = createSession(Date.now() + 60_000);
+    expect(a).toMatch(/^[0-9a-f]{64}$/);
+    expect(b).toMatch(/^[0-9a-f]{64}$/);
+    expect(a).not.toBe(b);
+  });
+
+  it('get / extend / delete ignore bad tokens and never write the store', () => {
+    const real = createSession(Date.now() + 60_000);
+    const before = readFileSync(sessionsFile());
+    for (const token of BAD_TOKENS) {
+      expect(getSession(token), String(token)).toBeUndefined();
+      expect(extendSession(token, Date.now() + 99_999_999), String(token)).toBe(false);
+      expect(() => deleteSession(token)).not.toThrow();
+      expectPrototypeClean();
+    }
+    expect(readFileSync(sessionsFile()).equals(before)).toBe(true);
+    expect(getSession(real)).toBeDefined();
+  });
+
+  it('requireAuth and checkAuthHandler return 401 for every bad cookie', async () => {
+    await configurePassword('hunter2!!');
+    createSession(Date.now() + 60_000);
+    for (const token of BAD_TOKENS) {
+      // An empty string takes the existing "no cookie" path; still 401.
+      const cookies = { [SESSION_COOKIE_NAME]: token } as unknown as Record<string, string>;
+      const res = mockRes();
+      let called = false;
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      requireAuth(mockReq({ cookies }) as any, res as any, () => {
+        called = true;
+      });
+      expect(called, String(token)).toBe(false);
+      expect(res.statusCode, String(token)).toBe(401);
+      expect(res.cookies[SESSION_COOKIE_NAME]).toBeUndefined();
+
+      const check = mockRes();
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      checkAuthHandler(mockReq({ cookies }) as any, check as any);
+      expect(check.statusCode, String(token)).toBe(401);
+      expect(check.body).toMatchObject({ authenticated: false });
+      expect(check.cookies[SESSION_COOKIE_NAME]).toBeUndefined();
+      expectPrototypeClean();
+    }
+  });
+
+  it('treats malformed stored entries as expired and removes them', () => {
+    const token = 'b'.repeat(64);
+    for (const entry of [
+      '{"expires_at":"9999999999999","created_at":0}',
+      '{"created_at":0}',
+      '{"expires_at":null,"created_at":0}',
+      '{"expires_at":1e999,"created_at":0}',
+      'null',
+      '"string"',
+    ]) {
+      writeSessionsFile(`{"${token}":${entry}}`);
+      expect(getSession(token), entry).toBeUndefined();
+      expect(readFileSync(sessionsFile(), 'utf-8'), entry).not.toContain(token);
+
+      writeSessionsFile(`{"${token}":${entry}}`);
+      expect(extendSession(token, Date.now() + 60_000), entry).toBe(false);
+      expect(cleanupExpiredSessions(), entry).toBe(1);
+      expect(readFileSync(sessionsFile(), 'utf-8'), entry).not.toContain(token);
+      expectPrototypeClean();
+    }
+  });
+
+  it('a hand-written "__proto__" key in the file is inert', () => {
+    writeSessionsFile('{"__proto__":{"expires_at":9000000000000000,"created_at":0}}');
+    expect(getSession('__proto__')).toBeUndefined();
+    expect(extendSession('__proto__', Date.now() + 60_000)).toBe(false);
+    expectPrototypeClean();
+    // A key that isn't a well-formed token can never be presented, so cleanup removes it even
+    // though its expiry is in the future.
+    expect(cleanupExpiredSessions()).toBe(1);
+    expect(readFileSync(sessionsFile(), 'utf-8')).not.toContain('__proto__');
+    expectPrototypeClean();
+  });
+
+  it('cleanup drops non-token keys but keeps live sessions', () => {
+    const live = 'd'.repeat(64);
+    writeSessionsFile(
+      `{"constructor":{"expires_at":9000000000000000,"created_at":0},` +
+        `"${live}":{"expires_at":9000000000000000,"created_at":0}}`,
+    );
+    expect(cleanupExpiredSessions()).toBe(1);
+    expect(getSession(live)).toBeDefined();
+    expect(readFileSync(sessionsFile(), 'utf-8')).not.toContain('constructor');
+  });
+
+  it('a non-object "sessions" value loads as an empty store', () => {
+    writeSessionsFile('["x"]');
+    expect(getSession('c'.repeat(64))).toBeUndefined();
+    const t = createSession(Date.now() + 60_000);
+    expect(getSession(t)).toBeDefined();
+  });
+});
+
+// ── Corrupt or wrong-shape sessions.json ────────────────────────────
+
+describe('a malformed sessions.json loads as an empty store', () => {
+  const live = 'e'.repeat(64);
+  const liveEntry = `{"${live}":{"expires_at":9000000000000000,"created_at":0}}`;
+  const CASES: [string, string][] = [
+    ['empty file', ''],
+    ['truncated JSON', `{"sessions":${liveEntry},"metadata":{"last_cl`],
+    ['top-level null', 'null'],
+    ['top-level number', '42'],
+    ['top-level string', '"sessions"'],
+    ['top-level array', `[${liveEntry}]`],
+    ['missing metadata', `{"sessions":${liveEntry}}`],
+    ['null metadata', `{"sessions":${liveEntry},"metadata":null}`],
+    ['missing sessions', '{"metadata":{"last_cleanup":0,"version":1}}'],
+    ['array sessions', '{"sessions":["x"],"metadata":{"last_cleanup":0,"version":1}}'],
+  ];
+
+  let warn: MockInstance<typeof console.warn>;
+  beforeEach(() => {
+    warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+  });
+  afterEach(() => {
+    warn.mockRestore();
+  });
+
+  for (const [name, contents] of CASES) {
+    it(`${name}: no session is accepted, nothing throws, and login works`, async () => {
+      await configurePassword('hunter2!!');
+      mkdirSync(join(tmpDataDir, 'data'), { recursive: true });
+      writeFileSync(sessionsFile(), contents);
+
+      // Fail closed: even a live-looking entry inside a wrong-shape file is not accepted.
+      expect(getSession(live)).toBeUndefined();
+      expect(extendSession(live, Date.now() + 60_000)).toBe(false);
+      expect(() => deleteSession(live)).not.toThrow();
+      expect(() => cleanupExpiredSessions()).not.toThrow();
+      const res = mockRes();
+      let called = false;
+      requireAuth(
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        mockReq({ cookies: { [SESSION_COOKIE_NAME]: live } }) as any,
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        res as any,
+        () => {
+          called = true;
+        },
+      );
+      expect(called).toBe(false);
+      expect(res.statusCode).toBe(401);
+      expect(warn).toHaveBeenCalled();
+      expectPrototypeClean();
+
+      const login = mockRes();
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      await loginHandler(mockReq({ body: { password: 'hunter2!!' } }) as any, login as any);
+      expect(login.statusCode).toBe(200);
+      const token = login.cookies[SESSION_COOKIE_NAME].value;
+      expect(getSession(token)).toBeDefined();
+      expect(getSession(live)).toBeUndefined();
+      // The bad file has been replaced by a well-formed one.
+      const rewritten = JSON.parse(readFileSync(sessionsFile(), 'utf-8')) as {
+        sessions: Record<string, unknown>;
+        metadata: { version: number };
+      };
+      expect(Object.keys(rewritten.sessions)).toEqual([token]);
+      expect(rewritten.metadata.version).toBe(1);
+    });
+  }
+
+  // chmod 000 doesn't stop root from reading, so this can only run unprivileged.
+  it.skipIf(process.getuid?.() === 0)(
+    'a non-ENOENT read error throws and never overwrites the store',
+    async () => {
+      await configurePassword('hunter2!!');
+      const a = createSession(Date.now() + 60_000);
+      const b = createSession(Date.now() + 60_000);
+      const before = readFileSync(sessionsFile());
+      chmodSync(sessionsFile(), 0o000);
+      try {
+        expect(() => getSession(a)).toThrow(/EACCES/);
+        expect(() => extendSession(a, Date.now() + 99_999)).toThrow(/EACCES/);
+        expect(() => cleanupExpiredSessions()).toThrow(/EACCES/);
+        expect(() => createSession(Date.now() + 60_000)).toThrow(/EACCES/);
+        // requireAuth throws too; Express turns that into a 500.
+        expect(() =>
+          requireAuth(
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            mockReq({ cookies: { [SESSION_COOKIE_NAME]: a } }) as any,
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            mockRes() as any,
+            () => undefined,
+          ),
+        ).toThrow(/EACCES/);
+        await expect(
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          loginHandler(mockReq({ body: { password: 'hunter2!!' } }) as any, mockRes() as any),
+        ).rejects.toThrow(/EACCES/);
+        expect(warn).not.toHaveBeenCalled();
+      } finally {
+        chmodSync(sessionsFile(), 0o600);
+      }
+      expect(readFileSync(sessionsFile()).equals(before)).toBe(true);
+      expect(getSession(a)).toBeDefined();
+      expect(getSession(b)).toBeDefined();
+    },
+  );
+
+  it('removes stale temp files from a dead save, but not recent or unrelated ones', () => {
+    createSession(Date.now() + 60_000);
+    const dataDir = join(tmpDataDir, 'data');
+    const stale = join(dataDir, 'sessions.json.4242.0123456789ab.tmp');
+    const recent = join(dataDir, 'sessions.json.4243.0123456789ab.tmp');
+    const unrelated = join(dataDir, 'sessions.json.old.tmp');
+    for (const f of [stale, recent, unrelated]) writeFileSync(f, '{}');
+    const old = new Date(Date.now() - 10 * 60_000);
+    utimesSync(stale, old, old);
+    utimesSync(unrelated, old, old);
+    createSession(Date.now() + 60_000);
+    expect(readdirSync(dataDir).sort()).toEqual(
+      ['sessions.json', 'sessions.json.4243.0123456789ab.tmp', 'sessions.json.old.tmp'].sort(),
+    );
+  });
+
+  it('saves atomically: no temp files left behind and the store stays 0600', () => {
+    for (let i = 0; i < 5; i++) createSession(Date.now() + 60_000);
+    const dataDir = join(tmpDataDir, 'data');
+    expect(readdirSync(dataDir)).toEqual(['sessions.json']);
+    expect(statSync(sessionsFile()).mode & 0o777).toBe(0o600);
+  });
+
+  it('a save over a 0644 file leaves it 0600', () => {
+    createSession(Date.now() + 60_000);
+    chmodSync(sessionsFile(), 0o644);
+    createSession(Date.now() + 60_000);
+    expect(statSync(sessionsFile()).mode & 0o777).toBe(0o600);
   });
 });
 
@@ -248,8 +538,7 @@ describe('login handler', () => {
   });
 
   it('logoutHandler clears the cookie and deletes the server-side session', () => {
-    const token = 'tok-logout';
-    createSession(token, Date.now() + 60_000);
+    const token = createSession(Date.now() + 60_000);
     expect(getSession(token)).toBeDefined();
     const res = mockRes();
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -260,8 +549,7 @@ describe('login handler', () => {
 
   it('checkAuthHandler reports authenticated for a valid cookie and unauth for missing', async () => {
     await configurePassword('hunter2!!');
-    const token = 'tok-check';
-    createSession(token, Date.now() + 60_000);
+    const token = createSession(Date.now() + 60_000);
 
     const yes = mockRes();
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -304,8 +592,7 @@ describe('requireAuth middleware', () => {
 
   it('rejects with 401 on expired cookie and removes the session', async () => {
     await configurePassword('hunter2!!');
-    const token = 'tok-expired';
-    createSession(token, Date.now() - 1_000);
+    const token = createSession(Date.now() - 1_000);
     const res = mockRes();
     let called = false;
     requireAuth(
@@ -324,10 +611,9 @@ describe('requireAuth middleware', () => {
 
   it('calls next() and rolls the session for a valid cookie', async () => {
     await configurePassword('hunter2!!');
-    const token = 'tok-valid';
     // Session created with 1 day remaining — should be rolled to ~7 days.
     const oneDayAhead = Date.now() + 24 * 60 * 60 * 1000;
-    createSession(token, oneDayAhead);
+    const token = createSession(oneDayAhead);
 
     const res = mockRes();
     let called = false;
@@ -359,9 +645,8 @@ describe('requireAuth middleware', () => {
 describe('rolling expiry', () => {
   it('a session aged 6 days is still valid and gets refreshed by middleware', async () => {
     await configurePassword('hunter2!!');
-    const token = 'tok-aged';
     // 1 day of TTL remaining (i.e. ~6 days old in real time terms).
-    createSession(token, Date.now() + 24 * 60 * 60 * 1000);
+    const token = createSession(Date.now() + 24 * 60 * 60 * 1000);
 
     const res = mockRes();
     let called = false;
@@ -412,10 +697,8 @@ describe('changePasswordHandler', () => {
     await configurePassword('old-password-1');
 
     // Two sessions exist: caller's, and a "stale" one on another device.
-    const callerToken = 'caller-session';
-    const otherToken = 'other-device-session';
-    createSession(callerToken, Date.now() + SESSION_TTL_MS);
-    createSession(otherToken, Date.now() + SESSION_TTL_MS);
+    const callerToken = createSession(Date.now() + SESSION_TTL_MS);
+    const otherToken = createSession(Date.now() + SESSION_TTL_MS);
 
     const res = mockRes();
     await changePasswordHandler(

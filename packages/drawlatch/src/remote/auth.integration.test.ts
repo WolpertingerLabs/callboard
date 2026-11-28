@@ -222,6 +222,83 @@ describe('dashboard surface with a password configured', () => {
   });
 });
 
+// ── Session cookies that name prototype members (C-01) ─────────────────────
+//
+// Its own app, so its own auth limiters: login and change-password share 3 requests a minute, so
+// change-password is probed with two values here (requireAuth is covered for every value in
+// auth.test.ts) and the third request is the control login.
+
+describe('session cookies that are not minted tokens', () => {
+  let server: Server;
+  let url: string;
+  let tmpDir: string;
+
+  beforeAll(async () => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'drawlatch-int-proto-'));
+    process.env.MCP_CONFIG_DIR = tmpDir;
+    await configurePasswordAsync(PASSWORD);
+
+    const app = createApp({
+      config: makeConfig(),
+      ownKeys: generateKeyBundle(),
+      authorizedPeers: [],
+    });
+    ({ server, url } = await listen(app));
+  });
+
+  afterAll(async () => {
+    await close(server);
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+    delete process.env.MCP_CONFIG_DIR;
+    delete process.env.AUTH_PASSWORD_HASH;
+    delete process.env.AUTH_PASSWORD_SALT;
+  });
+
+  it('rejects prototype-chain and JSON-valued session cookies on every gated route', async () => {
+    const bad = [
+      'constructor',
+      'toString',
+      '__proto__',
+      'hasOwnProperty',
+      'prototype',
+      'j:{"expires_at":1}',
+    ];
+    for (const value of bad) {
+      const headers = { cookie: `${SESSION_COOKIE_NAME}=${value}` };
+      for (const p of ['/api/admin/sessions', '/api/admin/meta']) {
+        const res = await fetch(`${url}${p}`, { headers });
+        expect(res.status, `${p} ${value}`).toBe(401);
+        expect(extractSessionCookie(res), `${p} ${value}`).toBeUndefined();
+      }
+      const check = await fetch(`${url}/api/auth/check`, { headers });
+      expect(check.status, `check ${value}`).toBe(401);
+      expect(await check.json()).toMatchObject({ authenticated: false });
+      expect(extractSessionCookie(check), `check ${value}`).toBeUndefined();
+
+      if (value !== '__proto__' && value !== 'constructor') continue;
+      const change = await fetch(`${url}/api/auth/change-password`, {
+        method: 'POST',
+        headers: { ...headers, 'content-type': 'application/json' },
+        body: JSON.stringify({ currentPassword: PASSWORD, newPassword: 'whatever-12' }),
+      });
+      expect(change.status, `change-password ${value}`).toBe(401);
+      expect(extractSessionCookie(change), `change-password ${value}`).toBeUndefined();
+    }
+    expect(Object.prototype.hasOwnProperty.call(Object.prototype, 'expires_at')).toBe(false);
+
+    // Control: a real login cookie still works.
+    const login = await fetch(`${url}/api/auth/login`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ password: PASSWORD }),
+    });
+    expect(login.status).toBe(200);
+    const cookie = extractSessionCookie(login) ?? '';
+    expect((await fetch(`${url}/api/admin/sessions`, { headers: { cookie } })).status).toBe(200);
+    expect((await fetch(`${url}/api/auth/check`, { headers: { cookie } })).status).toBe(200);
+  });
+});
+
 // ── Rate limits (fresh app so the limiters start empty) ────────────────────
 
 describe('auth rate limits', () => {
